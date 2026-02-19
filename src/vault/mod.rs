@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use secrecy::SecretString;
+use zeroize::Zeroize;
 
 use crate::error::{Error, Result};
 use crate::secret::SecretEntry;
@@ -47,8 +48,10 @@ impl Vault {
         let (salt, encrypted) = store::read_vault_file(path)?;
 
         let key = crypto::derive_key(password, &salt)?;
-        let plaintext = crypto::decrypt(&encrypted, &key)?;
-        let entries: HashMap<String, SecretEntry> = serde_json::from_slice(&plaintext)?;
+        let mut plaintext = crypto::decrypt(&encrypted, &key)?;
+        let entries = serde_json::from_slice(&plaintext);
+        plaintext.zeroize();
+        let entries: HashMap<String, SecretEntry> = entries?;
 
         Ok(Self {
             path: path.to_owned(),
@@ -60,8 +63,10 @@ impl Vault {
 
     /// Encrypt and save the vault to disk.
     pub fn save(&self) -> Result<()> {
-        let plaintext = serde_json::to_vec(&self.entries)?;
-        let encrypted = crypto::encrypt(&plaintext, &self.key)?;
+        let mut plaintext = serde_json::to_vec(&self.entries)?;
+        let result = crypto::encrypt(&plaintext, &self.key);
+        plaintext.zeroize();
+        let encrypted = result?;
         store::write_vault_file(&self.path, &self.salt, &encrypted)?;
         Ok(())
     }

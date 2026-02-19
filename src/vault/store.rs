@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 
 use camino::Utf8Path;
 
@@ -10,8 +11,10 @@ const MAGIC: &[u8; 8] = b"RAHSIA\x01\x00";
 /// Write an encrypted vault file.
 ///
 /// File format: `MAGIC (8) || salt (16) || encrypted_payload (variable)`.
+///
+/// The file is written atomically (temp file + rename) and with restrictive
+/// permissions (0600 on Unix) to prevent other users from reading the vault.
 pub fn write_vault_file(path: &Utf8Path, salt: &[u8; 16], encrypted: &[u8]) -> Result<()> {
-    // Write to a temporary file first, then rename for atomicity.
     let tmp_path = path.with_extension("tmp");
 
     let mut data = Vec::with_capacity(MAGIC.len() + salt.len() + encrypted.len());
@@ -24,9 +27,34 @@ pub fn write_vault_file(path: &Utf8Path, salt: &[u8; 16], encrypted: &[u8]) -> R
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(&tmp_path, &data)?;
-    fs::rename(&tmp_path, path)?;
+    // Write to temp file with restrictive permissions.
+    write_file_restricted(tmp_path.as_std_path(), &data)?;
 
+    // Atomic rename. Clean up temp file on failure.
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+
+    Ok(())
+}
+
+/// Write data to a file with mode 0600 (owner read/write only) on Unix.
+fn write_file_restricted(path: &std::path::Path, data: &[u8]) -> Result<()> {
+    use fs::OpenOptions;
+
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+
+    let mut file = opts.open(path)?;
+    file.write_all(data)?;
+    file.sync_all()?;
     Ok(())
 }
 
@@ -61,7 +89,6 @@ pub fn read_vault_file(path: &Utf8Path) -> Result<([u8; 16], Vec<u8>)> {
 mod tests {
     use super::*;
     use camino::Utf8Path;
-    use std::io::Write;
     use tempfile::NamedTempFile;
 
     #[test]
@@ -104,5 +131,25 @@ mod tests {
         let path: &Utf8Path = file.path().try_into().unwrap();
         let result = read_vault_file(path);
         assert!(matches!(result, Err(Error::InvalidFormat)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_file_has_restricted_permissions() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path: &Utf8Path = dir.path().try_into().unwrap();
+        let vault_path = path.join("test.vault");
+
+        write_vault_file(&vault_path, &[0u8; 16], b"encrypted").unwrap();
+
+        let mode = std::fs::metadata(vault_path.as_std_path()).unwrap().mode();
+        // Check the permission bits (lower 12 bits).
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "vault file should be owner-only (0600)"
+        );
     }
 }

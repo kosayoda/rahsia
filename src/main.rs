@@ -3,7 +3,9 @@ use std::os::unix::process::CommandExt;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use color_eyre::{
-    eyre::{bail, ensure, Context, OptionExt}, owo_colors::OwoColorize, Result
+    eyre::{bail, ensure, Context, OptionExt},
+    owo_colors::OwoColorize,
+    Result,
 };
 use dialoguer::{Editor, Input, Password};
 use secrecy::{ExposeSecret, SecretString};
@@ -237,21 +239,25 @@ fn open_vault(path: &Utf8Path) -> Result<Vault> {
         path.red(),
         "rahsia init".yellow()
     );
-    let password = Password::new().with_prompt("Vault password").interact()?;
-    Ok(Vault::open(path, password.as_bytes())?)
+    let mut password = Password::new().with_prompt("Vault password").interact()?;
+    let result = Vault::open(path, password.as_bytes());
+    password.zeroize();
+    Ok(result?)
 }
 
 // --- Commands ---
 
 fn cmd_init(vault_path: &Utf8Path) -> Result<()> {
-    let password = Password::new()
+    let mut password = Password::new()
         .with_prompt("Vault password")
         .with_confirmation("Confirm password", "Passwords do not match")
         .interact()?;
 
     ensure!(!password.is_empty(), "Password cannot be empty");
 
-    Vault::create(vault_path, password.as_bytes())?;
+    let result = Vault::create(vault_path, password.as_bytes());
+    password.zeroize();
+    result?;
     eprintln!("Vault created at {vault_path}");
     Ok(())
 }
@@ -347,7 +353,11 @@ fn cmd_run(
         }
     }
 
-    ensure!(keys.is_empty(), "One or more keys not found: {}", keys.join(","));
+    ensure!(
+        keys.is_empty(),
+        "One or more keys not found: {}",
+        keys.join(",")
+    );
 
     let mut cmd = std::process::Command::new(&command[0]);
     cmd.args(&command[1..]);

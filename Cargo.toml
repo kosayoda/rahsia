@@ -1,0 +1,11 @@
+[package]
+name = "rahsia"
+version = "0.1.0"
+edition = "2024"
+description = "Runtime secret management"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+camino = "1.2.2"
+color-eyre = "0.6.5"

@@ -27,11 +27,11 @@ pub struct SecretEntry {
 }
 
 impl SecretEntry {
-    pub fn new(key: String, value: String, tags: Vec<String>) -> Self {
+    pub fn new(key: String, value: SecretString, tags: Vec<String>) -> Self {
         let now = jiff::Timestamp::now();
         Self {
             key,
-            value: value.into(),
+            value,
             tags,
             created_at: now,
             updated_at: now,

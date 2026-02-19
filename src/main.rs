@@ -5,10 +5,11 @@ use color_eyre::{
     eyre::{Context, OptionExt, ensure},
     owo_colors::OwoColorize,
 };
-use dialoguer::{Input, Password};
-use secrecy::ExposeSecret;
+use dialoguer::{Editor, Input, Password};
+use secrecy::{ExposeSecret, SecretString};
 
 use rahsia::vault::Vault;
+use zeroize::Zeroize;
 
 #[derive(Parser)]
 #[command(name = "rahsia", version, about = "Runtime secret management")]
@@ -43,7 +44,7 @@ enum Command {
         key: Option<String>,
 
         /// Tags to associate with this secret.
-        #[arg(long = "tag", short = 't', value_delimiter=',')]
+        #[arg(long = "tag", short = 't', value_delimiter = ',')]
         tags: Vec<String>,
     },
 
@@ -72,7 +73,7 @@ enum Command {
         key: Option<String>,
 
         /// The tag(s) to add.
-        #[arg(long = "tag", short = 't', value_delimiter=',')]
+        #[arg(long = "tag", short = 't', value_delimiter = ',')]
         tags: Vec<String>,
     },
 
@@ -82,7 +83,14 @@ enum Command {
         key: Option<String>,
 
         /// The tag(s) to remove.
-        #[arg(long = "tag", short = 't', value_delimiter=',')]
+        #[arg(long = "tag", short = 't', value_delimiter = ',')]
+        tags: Vec<String>,
+    },
+
+    /// Load secrets into the vault from KEY_1=VALUE_1\nKEY_2=VALUE_2 format.
+    Load {
+        /// The tag(s) to attach to all keys.
+        #[arg(long = "tag", short = 't', value_delimiter = ',')]
         tags: Vec<String>,
     },
 }
@@ -126,6 +134,12 @@ fn main() -> Result<()> {
             let tags = prompt_tags(tags)?;
             cmd_untag(&mut vault, &key, &tags)
         }
+        Command::Load { tags } => {
+            let mut vault = open_vault(&cli.vault_path)?;
+            let tags = prompt_tags(tags)?;
+            let secrets = prompt_secrets()?;
+            cmd_load(&mut vault, secrets, tags)
+        }
     }
 }
 
@@ -162,12 +176,24 @@ fn prompt_tags(tags: Vec<String>) -> Result<Vec<String>> {
 }
 
 /// Prompt for a secret value (no echo).
-fn prompt_value(key: &str) -> Result<String> {
+fn prompt_value(key: &str) -> Result<SecretString> {
     let value: String = Password::new()
         .with_prompt(format!("Value for {}", key.green()))
         .interact()?;
     ensure!(!value.is_empty(), "Secret value cannot be empty");
-    Ok(value)
+    Ok(value.into())
+}
+
+fn prompt_secrets() -> Result<Vec<(String, SecretString)>> {
+    let mut secret_string: String = Editor::new()
+        .edit("Paste secrets in .env format")?
+        .ok_or_eyre("No secrets to load")?;
+    let secrets: Vec<(String, SecretString)> =
+        dotenvy::from_read_iter(std::io::Cursor::new(&mut secret_string))
+            .map(|s| s.map(|(k, v)| (k, v.into())))
+            .collect::<Result<Vec<_>, dotenvy::Error>>()?;
+    secret_string.zeroize();
+    Ok(secrets)
 }
 
 /// Open an existing vault, prompting for the password.
@@ -197,7 +223,7 @@ fn cmd_init(vault_path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_set(vault: &mut Vault, key: String, value: String, tags: Vec<String>) -> Result<()> {
+fn cmd_set(vault: &mut Vault, key: String, value: SecretString, tags: Vec<String>) -> Result<()> {
     vault.set(key.clone(), value, tags);
     vault.save()?;
     eprintln!("Secret '{}' saved", key.green());
@@ -246,5 +272,19 @@ fn cmd_untag(vault: &mut Vault, key: &str, tags: &[String]) -> Result<()> {
     vault.untag(key, tags)?;
     vault.save()?;
     eprintln!("Updated {}", key.green());
+    Ok(())
+}
+
+fn cmd_load(
+    vault: &mut Vault,
+    secrets: Vec<(String, SecretString)>,
+    tags: Vec<String>,
+) -> Result<()> {
+    let num_secrets = secrets.len();
+    for (key, value) in secrets {
+        vault.set(key.clone(), value, tags.clone());
+    }
+    vault.save()?;
+    eprintln!("Saved {} secret(s)", num_secrets.green());
     Ok(())
 }

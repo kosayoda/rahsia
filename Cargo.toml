@@ -12,6 +12,7 @@ clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
 dialoguer = { version = "0.12", features = ["password"] }
 dirs = "6"
+dotenvy = "0.15.7"
 jiff = { version = "0.2.20", features = ["serde"] }
 rand = "0.9"
 

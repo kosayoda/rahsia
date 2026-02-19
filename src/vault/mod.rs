@@ -4,6 +4,7 @@ pub mod store;
 use std::collections::HashMap;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use secrecy::SecretString;
 
 use crate::error::{Error, Result};
 use crate::secret::SecretEntry;
@@ -66,10 +67,10 @@ impl Vault {
     }
 
     /// Set a secret. If the key already exists, its value and tags are updated.
-    pub fn set(&mut self, key: String, value: String, tags: Vec<String>) {
+    pub fn set(&mut self, key: String, value: SecretString, tags: Vec<String>) {
         match self.entries.get_mut(&key) {
             Some(existing) => {
-                existing.value = value.into();
+                existing.value = value;
                 existing.tags = tags;
                 existing.updated_at = jiff::Timestamp::now();
             }

@@ -1,9 +1,9 @@
+use std::os::unix::process::CommandExt;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use color_eyre::{
-    Result,
-    eyre::{Context, OptionExt, ensure},
-    owo_colors::OwoColorize,
+    eyre::{bail, ensure, Context, OptionExt}, owo_colors::OwoColorize, Result
 };
 use dialoguer::{Editor, Input, Password};
 use secrecy::{ExposeSecret, SecretString};
@@ -93,6 +93,21 @@ enum Command {
         #[arg(long = "tag", short = 't', value_delimiter = ',')]
         tags: Vec<String>,
     },
+
+    /// Run the given command with the specified secrets
+    Run {
+        /// These keys will be loaded.
+        #[arg(long = "key", short = 'k', value_delimiter = ',')]
+        keys: Vec<String>,
+
+        /// Secrets with this tag will be loaded.
+        #[arg(long = "tag", short = 't', value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// The command to run.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -140,6 +155,16 @@ fn main() -> Result<()> {
             let secrets = prompt_secrets()?;
             cmd_load(&mut vault, secrets, tags)
         }
+        Command::Run {
+            keys,
+            tags,
+            command,
+        } => {
+            let mut vault = open_vault(&cli.vault_path)?;
+            let tags = prompt_tags(tags)?;
+            let keys = prompt_keys(keys)?;
+            cmd_run(&mut vault, keys, tags, command)
+        }
     }
 }
 
@@ -155,16 +180,24 @@ fn prompt_key(key: Option<String>) -> Result<String> {
     }
 }
 
-/// Resolve tags: use the provided values, or prompt interactively.
+fn prompt_keys(items: Vec<String>) -> Result<Vec<String>> {
+    prompt_multi("Keys", items)
+}
+
+fn prompt_tags(items: Vec<String>) -> Result<Vec<String>> {
+    prompt_multi("Tags", items)
+}
+
+/// Resolve items: use the provided values, or prompt interactively.
 ///
 /// Accepts a comma-separated list. Empty input means no tags.
-fn prompt_tags(tags: Vec<String>) -> Result<Vec<String>> {
-    if !tags.is_empty() {
-        return Ok(tags);
+fn prompt_multi(name: &'static str, items: Vec<String>) -> Result<Vec<String>> {
+    if !items.is_empty() {
+        return Ok(items);
     }
 
     let input: String = Input::new()
-        .with_prompt("Tags (comma-separated, empty to skip)")
+        .with_prompt(format!("{name} (comma-separated, empty to skip)"))
         .allow_empty(true)
         .interact_text()?;
 
@@ -287,4 +320,42 @@ fn cmd_load(
     vault.save()?;
     eprintln!("Saved {} secret(s)", num_secrets.green());
     Ok(())
+}
+
+fn cmd_run(
+    vault: &mut Vault,
+    mut keys: Vec<String>,
+    tags: Vec<String>,
+    command: Vec<String>,
+) -> Result<()> {
+    let entries = vault.list(None);
+
+    let mut secrets = vec![];
+    for entry in entries {
+        if tags.iter().any(|t| entry.has_tag(t)) {
+            secrets.push(entry);
+            if let Some(idx) = keys.iter().position(|k| k == &entry.key) {
+                keys.swap_remove(idx);
+            }
+            continue;
+        }
+
+        if let Some(idx) = keys.iter().position(|k| k == &entry.key) {
+            secrets.push(entry);
+            keys.swap_remove(idx);
+            continue;
+        }
+    }
+
+    ensure!(keys.is_empty(), "One or more keys not found: {}", keys.join(","));
+
+    let mut cmd = std::process::Command::new(&command[0]);
+    cmd.args(&command[1..]);
+
+    for secret in secrets {
+        cmd.env(&secret.key, secret.value.expose_secret());
+    }
+
+    let err = cmd.exec();
+    bail!("Failed to exec command: {err}");
 }

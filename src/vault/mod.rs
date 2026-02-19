@@ -105,29 +105,31 @@ impl Vault {
             .collect()
     }
 
-    /// Add a tag to an existing secret.
-    pub fn tag(&mut self, key: &str, tag: String) -> Result<()> {
+    /// Add one or more tags to an existing secret.
+    pub fn tag(&mut self, key: &str, tags: Vec<String>) -> Result<()> {
         let entry = self
             .entries
             .get_mut(key)
             .ok_or_else(|| Error::SecretNotFound(key.to_string()))?;
 
-        if !entry.tags.contains(&tag) {
-            entry.tags.push(tag);
-            entry.updated_at = jiff::Timestamp::now();
+        for tag in tags {
+            if !entry.tags.contains(&tag) {
+                entry.tags.push(tag);
+                entry.updated_at = jiff::Timestamp::now();
+            }
         }
 
         Ok(())
     }
 
     /// Remove a tag from an existing secret.
-    pub fn untag(&mut self, key: &str, tag: &str) -> Result<()> {
+    pub fn untag(&mut self, key: &str, tags: &[String]) -> Result<()> {
         let entry = self
             .entries
             .get_mut(key)
             .ok_or_else(|| Error::SecretNotFound(key.to_string()))?;
 
-        entry.tags.retain(|t| t != tag);
+        entry.tags.retain(|t| !tags.contains(t));
         entry.updated_at = jiff::Timestamp::now();
 
         Ok(())
@@ -234,14 +236,14 @@ mod tests {
         let mut vault = Vault::create(&path, password).unwrap();
         vault.set("KEY".into(), "val".into(), vec![]);
 
-        vault.tag("KEY", "new-tag".into()).unwrap();
+        vault.tag("KEY", vec!["new-tag".into()]).unwrap();
         assert!(vault.get("KEY").unwrap().has_tag("new-tag"));
 
         // Adding same tag again is a no-op.
-        vault.tag("KEY", "new-tag".into()).unwrap();
+        vault.tag("KEY", vec!["new-tag".into()]).unwrap();
         assert_eq!(vault.get("KEY").unwrap().tags.len(), 1);
 
-        vault.untag("KEY", "new-tag").unwrap();
+        vault.untag("KEY", &["new-tag".into()]).unwrap();
         assert!(!vault.get("KEY").unwrap().has_tag("new-tag"));
     }
 

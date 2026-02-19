@@ -1,9 +1,9 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use color_eyre::{
-    eyre::{ensure, Context, OptionExt},
-    owo_colors::OwoColorize,
     Result,
+    eyre::{Context, OptionExt, ensure},
+    owo_colors::OwoColorize,
 };
 use dialoguer::{Input, Password};
 use secrecy::ExposeSecret;
@@ -37,19 +37,19 @@ enum Command {
     /// Initialize a new encrypted vault
     Init,
 
-    /// Set a secret value (prompts for the value securely)
+    /// Set a secret value
     Set {
-        /// The secret key name (e.g. AWS_ACCESS_KEY_ID). Prompted if not provided.
+        /// The secret key name (e.g. AWS_ACCESS_KEY_ID).
         key: Option<String>,
 
-        /// Tags to associate with this secret. Prompted if not provided.
-        #[arg(long = "tag", short = 't')]
+        /// Tags to associate with this secret.
+        #[arg(long = "tag", short = 't', value_delimiter=',')]
         tags: Vec<String>,
     },
 
     /// Get a secret value
     Get {
-        /// The secret key name to retrieve. Prompted if not provided.
+        /// The secret key name to retrieve.
         key: Option<String>,
     },
 
@@ -62,8 +62,28 @@ enum Command {
 
     /// Remove a secret from the vault
     Remove {
-        /// The secret key name to remove. Prompted if not provided.
+        /// The secret key name to remove.
         key: Option<String>,
+    },
+
+    /// Add a tag to an existing secret
+    Tag {
+        /// The secret key name.
+        key: Option<String>,
+
+        /// The tag(s) to add.
+        #[arg(long = "tag", short = 't', value_delimiter=',')]
+        tags: Vec<String>,
+    },
+
+    /// Remove a tag from a secret
+    Untag {
+        /// The secret key name.
+        key: Option<String>,
+
+        /// The tag(s) to remove.
+        #[arg(long = "tag", short = 't', value_delimiter=',')]
+        tags: Vec<String>,
     },
 }
 
@@ -73,7 +93,6 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Init => cmd_init(&cli.vault_path),
-
         Command::Set { key, tags } => {
             let mut vault = open_vault(&cli.vault_path)?;
             let key = prompt_key(key)?;
@@ -81,22 +100,31 @@ fn main() -> Result<()> {
             let value = prompt_value(&key)?;
             cmd_set(&mut vault, key, value, tags)
         }
-
         Command::Get { key } => {
             let vault = open_vault(&cli.vault_path)?;
             let key = prompt_key(key)?;
             cmd_get(&vault, &key)
         }
-
         Command::List { tag } => {
             let vault = open_vault(&cli.vault_path)?;
             cmd_list(&vault, tag.as_deref())
         }
-
         Command::Remove { key } => {
             let mut vault = open_vault(&cli.vault_path)?;
             let key = prompt_key(key)?;
             cmd_remove(&mut vault, &key)
+        }
+        Command::Tag { key, tags } => {
+            let mut vault = open_vault(&cli.vault_path)?;
+            let key = prompt_key(key)?;
+            let tags = prompt_tags(tags)?;
+            cmd_tag(&mut vault, &key, tags)
+        }
+        Command::Untag { key, tags } => {
+            let mut vault = open_vault(&cli.vault_path)?;
+            let key = prompt_key(key)?;
+            let tags = prompt_tags(tags)?;
+            cmd_untag(&mut vault, &key, &tags)
         }
     }
 }
@@ -204,5 +232,19 @@ fn cmd_remove(vault: &mut Vault, key: &str) -> Result<()> {
     vault.remove(key)?;
     vault.save()?;
     eprintln!("Secret '{}' removed", key.green());
+    Ok(())
+}
+
+fn cmd_tag(vault: &mut Vault, key: &str, tags: Vec<String>) -> Result<()> {
+    vault.tag(key, tags)?;
+    vault.save()?;
+    eprintln!("Updated {}", key.green());
+    Ok(())
+}
+
+fn cmd_untag(vault: &mut Vault, key: &str, tags: &[String]) -> Result<()> {
+    vault.untag(key, tags)?;
+    vault.save()?;
+    eprintln!("Updated {}", key.green());
     Ok(())
 }

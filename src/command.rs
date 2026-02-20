@@ -33,7 +33,10 @@ pub enum SharedCommand {
     /// List secret keys in the vault
     #[command(alias = "ls")]
     List {
-        /// Filter by tag
+        /// Filter by key name pattern (regex).
+        pattern: Option<String>,
+
+        /// Filter by tag.
         #[arg(long = "tag", short = 't')]
         tag: Option<String>,
     },
@@ -45,9 +48,9 @@ pub enum SharedCommand {
         key: Option<String>,
     },
 
-    /// Add a tag to an existing secret
+    /// Add tags to secrets (supports regex patterns)
     Tag {
-        /// The secret key name.
+        /// Key name or regex pattern to match against key names.
         key: Option<String>,
 
         /// The tag(s) to add.
@@ -55,9 +58,9 @@ pub enum SharedCommand {
         tags: Vec<String>,
     },
 
-    /// Remove a tag from a secret
+    /// Remove tags from secrets (supports regex patterns)
     Untag {
-        /// The secret key name.
+        /// Key name or regex pattern to match against key names.
         key: Option<String>,
 
         /// The tag(s) to remove.
@@ -86,20 +89,20 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
             let key = prompt_key(key)?;
             cmd_get(vault, &key)
         }
-        SharedCommand::List { tag } => cmd_list(vault, tag.as_deref()),
+        SharedCommand::List { pattern, tag } => cmd_list(vault, pattern.as_deref(), tag.as_deref()),
         SharedCommand::Remove { key } => {
             let pattern = prompt_key(key)?;
             cmd_remove(vault, &pattern)
         }
         SharedCommand::Tag { key, tags } => {
-            let key = prompt_key(key)?;
+            let pattern = prompt_key(key)?;
             let tags = prompt_tags(tags)?;
-            cmd_tag(vault, &key, tags)
+            cmd_tag(vault, &pattern, tags)
         }
         SharedCommand::Untag { key, tags } => {
-            let key = prompt_key(key)?;
+            let pattern = prompt_key(key)?;
             let tags = prompt_tags(tags)?;
-            cmd_untag(vault, &key, &tags)
+            cmd_untag(vault, &pattern, &tags)
         }
         SharedCommand::Load { tags } => {
             let tags = prompt_tags(tags)?;
@@ -107,6 +110,47 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
             cmd_load(vault, secrets, tags)
         }
     }
+}
+
+// --- Regex helpers ---
+
+/// Compile a pattern into a regex anchored for full-match semantics.
+fn full_match_regex(pattern: &str) -> Result<Regex> {
+    let anchored = format!("^(?:{pattern})$");
+    Regex::new(&anchored).map_err(|e| eyre!("Invalid pattern: {e}"))
+}
+
+/// Find all key names matching a pattern, sorted alphabetically.
+fn find_matching_keys(vault: &Vault, pattern: &str) -> Result<Vec<String>> {
+    let regex = full_match_regex(pattern)?;
+    let mut keys: Vec<String> = vault
+        .list(None)
+        .iter()
+        .filter(|e| regex.is_match(&e.key))
+        .map(|e| e.key.clone())
+        .collect();
+    keys.sort();
+    Ok(keys)
+}
+
+/// Find matching keys and, if more than one match, let the user select with a multiselect.
+/// Returns the selected keys. Errors if no keys match.
+fn select_matching_keys(vault: &Vault, pattern: &str, prompt: &str) -> Result<Vec<String>> {
+    let matched = find_matching_keys(vault, pattern)?;
+    ensure!(!matched.is_empty(), "No secrets match '{pattern}'");
+
+    if matched.len() == 1 {
+        return Ok(matched);
+    }
+
+    let defaults = vec![true; matched.len()];
+    let selections = MultiSelect::new()
+        .with_prompt(prompt)
+        .items(&matched)
+        .defaults(&defaults)
+        .interact()?;
+
+    Ok(selections.iter().map(|&i| matched[i].clone()).collect())
 }
 
 // --- Prompts ---
@@ -186,13 +230,23 @@ fn cmd_get(vault: &Vault, key: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_list(vault: &Vault, tag: Option<&str>) -> Result<()> {
+fn cmd_list(vault: &Vault, pattern: Option<&str>, tag: Option<&str>) -> Result<()> {
     let entries = vault.list(tag);
 
-    if entries.is_empty() {
+    let regex = pattern.map(full_match_regex).transpose()?;
+
+    let filtered: Vec<_> = entries
+        .into_iter()
+        .filter(|e| match &regex {
+            Some(r) => r.is_match(&e.key),
+            None => true,
+        })
+        .collect();
+
+    if filtered.is_empty() {
         eprintln!("No secrets found");
     } else {
-        for entry in entries {
+        for entry in filtered {
             if entry.tags.is_empty() {
                 println!("{}", entry.key);
             } else {
@@ -219,40 +273,14 @@ fn cmd_load(
 }
 
 fn cmd_remove(vault: &mut Vault, pattern: &str) -> Result<()> {
-    let regex = full_match_regex(pattern)?;
+    let selected = select_matching_keys(vault, pattern, "Select secrets to remove")?;
 
-    let mut matched_keys: Vec<String> = vault
-        .list(None)
-        .iter()
-        .filter(|e| regex.is_match(&e.key))
-        .map(|e| e.key.clone())
-        .collect();
-    matched_keys.sort();
+    if selected.is_empty() {
+        eprintln!("Nothing removed");
+        return Ok(());
+    }
 
-    ensure!(!matched_keys.is_empty(), "No secrets match '{pattern}'");
-
-    let to_remove = if matched_keys.len() == 1 {
-        matched_keys
-    } else {
-        let defaults = vec![true; matched_keys.len()];
-        let selections = MultiSelect::new()
-            .with_prompt("Select secrets to remove")
-            .items(&matched_keys)
-            .defaults(&defaults)
-            .interact()?;
-
-        if selections.is_empty() {
-            eprintln!("Nothing removed");
-            return Ok(());
-        }
-
-        selections
-            .iter()
-            .map(|&i| matched_keys[i].clone())
-            .collect()
-    };
-
-    let removed = vault.remove_many(&to_remove);
+    let removed = vault.remove_many(&selected);
     vault.save()?;
 
     for entry in &removed {
@@ -262,22 +290,42 @@ fn cmd_remove(vault: &mut Vault, pattern: &str) -> Result<()> {
     Ok(())
 }
 
-/// Compile a pattern into a regex anchored for full-match semantics.
-fn full_match_regex(pattern: &str) -> Result<Regex> {
-    let anchored = format!("^(?:{pattern})$");
-    Regex::new(&anchored).map_err(|e| eyre!("Invalid pattern: {e}"))
-}
+fn cmd_tag(vault: &mut Vault, pattern: &str, tags: Vec<String>) -> Result<()> {
+    let selected = select_matching_keys(vault, pattern, "Select secrets to tag")?;
 
-fn cmd_tag(vault: &mut Vault, key: &str, tags: Vec<String>) -> Result<()> {
-    vault.tag(key, tags)?;
+    if selected.is_empty() {
+        eprintln!("Nothing updated");
+        return Ok(());
+    }
+
+    for key in &selected {
+        vault.tag(key, tags.clone())?;
+    }
     vault.save()?;
-    eprintln!("Updated {}", key.green());
+
+    for key in &selected {
+        eprintln!("Updated {}", key.green());
+    }
+
     Ok(())
 }
 
-fn cmd_untag(vault: &mut Vault, key: &str, tags: &[String]) -> Result<()> {
-    vault.untag(key, tags)?;
+fn cmd_untag(vault: &mut Vault, pattern: &str, tags: &[String]) -> Result<()> {
+    let selected = select_matching_keys(vault, pattern, "Select secrets to untag")?;
+
+    if selected.is_empty() {
+        eprintln!("Nothing updated");
+        return Ok(());
+    }
+
+    for key in &selected {
+        vault.untag(key, tags)?;
+    }
     vault.save()?;
-    eprintln!("Updated {}", key.green());
+
+    for key in &selected {
+        eprintln!("Updated {}", key.green());
+    }
+
     Ok(())
 }

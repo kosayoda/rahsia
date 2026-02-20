@@ -58,6 +58,13 @@ pub enum SharedCommand {
         #[arg(long = "tag", short = 't', value_delimiter = ',')]
         tags: Vec<String>,
     },
+
+    /// Load secrets into the vault from .env format (opens editor)
+    Load {
+        /// The tag(s) to attach to all loaded secrets.
+        #[arg(long = "tag", short = 't', value_delimiter = ',')]
+        tags: Vec<String>,
+    },
 }
 
 /// Dispatch a shared command against an open vault.
@@ -87,6 +94,11 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
             let key = prompt_key(key)?;
             let tags = prompt_tags(tags)?;
             cmd_untag(vault, &key, &tags)
+        }
+        SharedCommand::Load { tags } => {
+            let tags = prompt_tags(tags)?;
+            let secrets = prompt_secrets()?;
+            cmd_load(vault, secrets, tags)
         }
     }
 }
@@ -178,6 +190,19 @@ fn cmd_remove(vault: &mut Vault, key: &str) -> Result<()> {
     vault.save()?;
     eprintln!("Secret '{}' removed", key.green());
     Ok(())
+fn cmd_load(
+    vault: &mut Vault,
+    secrets: Vec<(String, SecretString)>,
+    tags: Vec<String>,
+) -> Result<()> {
+    let num_secrets = secrets.len();
+    for (key, value) in secrets {
+        vault.set(key.clone(), value, tags.clone());
+    }
+    vault.save()?;
+    eprintln!("Saved {} secret(s)", num_secrets.green());
+    Ok(())
+}
 }
 
 fn cmd_tag(vault: &mut Vault, key: &str, tags: Vec<String>) -> Result<()> {

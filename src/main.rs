@@ -41,13 +41,6 @@ enum Command {
     /// Initialize a new encrypted vault
     Init,
 
-    /// Load secrets into the vault from KEY_1=VALUE_1\nKEY_2=VALUE_2 format.
-    Load {
-        /// The tag(s) to attach to all keys.
-        #[arg(long = "tag", short = 't', value_delimiter = ',')]
-        tags: Vec<String>,
-    },
-
     /// Start an interactive REPL session
     Repl,
 
@@ -76,12 +69,6 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Init => cmd_init(&cli.vault_path),
-        Command::Load { tags } => {
-            let mut vault = open_vault(&cli.vault_path)?;
-            let tags = prompt_tags(tags)?;
-            let secrets = prompt_secrets()?;
-            cmd_load(&mut vault, secrets, tags)
-        }
         Command::Repl => {
             let mut vault = open_vault(&cli.vault_path)?;
             rahsia::repl::run(&mut vault)
@@ -145,20 +132,6 @@ fn cmd_init(vault_path: &Utf8Path) -> Result<()> {
     password.zeroize();
     result?;
     eprintln!("Vault created at {vault_path}");
-    Ok(())
-}
-
-fn cmd_load(
-    vault: &mut Vault,
-    secrets: Vec<(String, SecretString)>,
-    tags: Vec<String>,
-) -> Result<()> {
-    let num_secrets = secrets.len();
-    for (key, value) in secrets {
-        vault.set(key.clone(), value, tags.clone());
-    }
-    vault.save()?;
-    eprintln!("Saved {} secret(s)", num_secrets.green());
     Ok(())
 }
 

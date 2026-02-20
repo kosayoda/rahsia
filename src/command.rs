@@ -4,7 +4,7 @@ use color_eyre::{
     owo_colors::OwoColorize,
     Result,
 };
-use dialoguer::{Editor, Input, MultiSelect, Password};
+use dialoguer::{Confirm, Editor, Input, MultiSelect, Password};
 use regex::Regex;
 use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroize;
@@ -218,6 +218,17 @@ pub fn prompt_value(key: &str) -> Result<SecretString> {
 // --- Command implementations ---
 
 fn cmd_set(vault: &mut Vault, key: String, value: SecretString, tags: Vec<String>) -> Result<()> {
+    if vault.get(&key).is_ok() {
+        let overwrite = Confirm::new()
+            .with_prompt(format!("'{}' already exists. Overwrite?", key.yellow()))
+            .default(false)
+            .interact()?;
+        if !overwrite {
+            eprintln!("Aborted");
+            return Ok(());
+        }
+    }
+
     vault.set(key.clone(), value, tags);
     vault.save()?;
     eprintln!("Secret '{}' saved", key.green());
@@ -263,12 +274,23 @@ fn cmd_load(
     secrets: Vec<(String, SecretString)>,
     tags: Vec<String>,
 ) -> Result<()> {
+    let existing = secrets.iter().filter(|(k, _)| vault.get(k).is_ok()).count();
     let num_secrets = secrets.len();
+
     for (key, value) in secrets {
         vault.set(key.clone(), value, tags.clone());
     }
     vault.save()?;
-    eprintln!("Saved {} secret(s)", num_secrets.green());
+
+    if existing > 0 {
+        eprintln!(
+            "Saved {} secret(s) ({} overwritten)",
+            num_secrets.green(),
+            existing.yellow()
+        );
+    } else {
+        eprintln!("Saved {} secret(s)", num_secrets.green());
+    }
     Ok(())
 }
 

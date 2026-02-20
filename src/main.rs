@@ -127,6 +127,13 @@ fn cmd_run(
     tags: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
+    ensure!(
+        !keys.is_empty() || !tags.is_empty(),
+        "No keys or tags specified. Use {} or {} to select secrets to inject.",
+        "--key".yellow(),
+        "--tag".yellow()
+    );
+
     let entries = vault.list(None);
 
     let mut secrets = vec![];
@@ -150,6 +157,11 @@ fn cmd_run(
         keys.is_empty(),
         "One or more keys not found: {}",
         keys.join(",")
+    );
+
+    ensure!(
+        !secrets.is_empty(),
+        "No secrets matched the specified filters"
     );
 
     let mut cmd = std::process::Command::new(&command[0]);

@@ -24,23 +24,28 @@ pub fn write_vault_file(path: &Utf8Path, salt: &[u8; 16], encrypted: &[u8]) -> R
 
     // Ensure parent directory exists.
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)
+            .map_err(|e| Error::io(e, format!("failed to create directory {parent}")))?;
     }
 
     // Write to temp file with restrictive permissions.
-    write_file_restricted(tmp_path.as_std_path(), &data)?;
+    write_file_restricted(tmp_path.as_std_path(), &data)
+        .map_err(|e| Error::io(e, format!("failed to write {tmp_path}")))?;
 
     // Atomic rename. Clean up temp file on failure.
     if let Err(e) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);
-        return Err(e.into());
+        return Err(Error::io(
+            e,
+            format!("failed to rename {tmp_path} to {path}"),
+        ));
     }
 
     Ok(())
 }
 
 /// Write data to a file with mode 0600 (owner read/write only) on Unix.
-fn write_file_restricted(path: &std::path::Path, data: &[u8]) -> Result<()> {
+fn write_file_restricted(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     use fs::OpenOptions;
 
     let mut opts = OpenOptions::new();
@@ -64,7 +69,7 @@ pub fn read_vault_file(path: &Utf8Path) -> Result<([u8; 16], Vec<u8>)> {
         return Err(Error::VaultNotFound(path.to_owned()));
     }
 
-    let data = fs::read(path)?;
+    let data = fs::read(path).map_err(|e| Error::io(e, format!("failed to read {path}")))?;
 
     // Validate minimum size: magic (8) + salt (16) + at least some ciphertext.
     if data.len() < MAGIC.len() + 16 {

@@ -1,6 +1,6 @@
 use clap::Subcommand;
 use color_eyre::{
-    eyre::{ensure, eyre, OptionExt},
+    eyre::{ensure, Context, OptionExt},
     owo_colors::OwoColorize,
     Result,
 };
@@ -117,7 +117,7 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
 /// Compile a pattern into a regex anchored for full-match semantics.
 fn full_match_regex(pattern: &str) -> Result<Regex> {
     let anchored = format!("^(?:{pattern})$");
-    Regex::new(&anchored).map_err(|e| eyre!("Invalid pattern: {e}"))
+    Regex::new(&anchored).context(format!("Invalid regex pattern: {pattern}"))
 }
 
 /// Find all key names matching a pattern, sorted alphabetically.

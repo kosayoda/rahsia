@@ -18,14 +18,26 @@ pub enum Error {
     #[error("invalid vault file format")]
     InvalidFormat,
 
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
+    #[error("{context}: {source}")]
+    Io {
+        context: String,
+        source: std::io::Error,
+    },
 
-    #[error("serialization error: {0}")]
+    #[error("vault data is corrupted or incompatible")]
     Serialization(#[from] serde_json::Error),
 
     #[error("crypto error: {0}")]
     Crypto(String),
+}
+
+impl Error {
+    pub fn io(source: std::io::Error, context: impl Into<String>) -> Self {
+        Self::Io {
+            context: context.into(),
+            source,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

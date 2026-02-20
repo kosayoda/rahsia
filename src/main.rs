@@ -7,8 +7,8 @@ use color_eyre::{
     owo_colors::OwoColorize,
     Result,
 };
-use dialoguer::{Editor, Password};
-use secrecy::{ExposeSecret, SecretString};
+use dialoguer::Password;
+use secrecy::ExposeSecret;
 use zeroize::Zeroize;
 
 use rahsia::command::{self, prompt_keys, prompt_tags, SharedCommand};
@@ -88,20 +88,6 @@ fn main() -> Result<()> {
             command::dispatch(&mut vault, shared)
         }
     }
-}
-
-// --- CLI-only prompts ---
-
-fn prompt_secrets() -> Result<Vec<(String, SecretString)>> {
-    let mut secret_string: String = Editor::new()
-        .edit("Paste secrets in .env format")?
-        .ok_or_eyre("No secrets to load")?;
-    let secrets: Vec<(String, SecretString)> =
-        dotenvy::from_read_iter(std::io::Cursor::new(&mut secret_string))
-            .map(|s| s.map(|(k, v)| (k, v.into())))
-            .collect::<Result<Vec<_>, dotenvy::Error>>()?;
-    secret_string.zeroize();
-    Ok(secrets)
 }
 
 /// Open an existing vault, prompting for the password.

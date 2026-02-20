@@ -1,7 +1,13 @@
 use clap::Subcommand;
-use color_eyre::{eyre::ensure, owo_colors::OwoColorize, Result};
-use dialoguer::{Input, Password};
+use color_eyre::{
+    eyre::{ensure, eyre, OptionExt},
+    owo_colors::OwoColorize,
+    Result,
+};
+use dialoguer::{Editor, Input, MultiSelect, Password};
+use regex::Regex;
 use secrecy::{ExposeSecret, SecretString};
+use zeroize::Zeroize;
 
 use crate::vault::Vault;
 
@@ -32,10 +38,10 @@ pub enum SharedCommand {
         tag: Option<String>,
     },
 
-    /// Remove a secret from the vault
+    /// Remove secrets from the vault (supports regex patterns)
     #[command(alias = "rm")]
     Remove {
-        /// The secret key name to remove.
+        /// Key name or regex pattern to match against key names.
         key: Option<String>,
     },
 
@@ -82,8 +88,8 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
         }
         SharedCommand::List { tag } => cmd_list(vault, tag.as_deref()),
         SharedCommand::Remove { key } => {
-            let key = prompt_key(key)?;
-            cmd_remove(vault, &key)
+            let pattern = prompt_key(key)?;
+            cmd_remove(vault, &pattern)
         }
         SharedCommand::Tag { key, tags } => {
             let key = prompt_key(key)?;
@@ -143,6 +149,19 @@ fn prompt_multi(name: &'static str, items: Vec<String>) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Open an editor and parse secrets in .env format.
+fn prompt_secrets() -> Result<Vec<(String, SecretString)>> {
+    let mut secret_string: String = Editor::new()
+        .edit("Paste secrets in .env format")?
+        .ok_or_eyre("No secrets to load")?;
+    let secrets: Vec<(String, SecretString)> =
+        dotenvy::from_read_iter(std::io::Cursor::new(&mut secret_string))
+            .map(|s| s.map(|(k, v)| (k, v.into())))
+            .collect::<Result<Vec<_>, dotenvy::Error>>()?;
+    secret_string.zeroize();
+    Ok(secrets)
+}
+
 /// Prompt for a secret value (no echo).
 pub fn prompt_value(key: &str) -> Result<SecretString> {
     let value: String = Password::new()
@@ -185,11 +204,6 @@ fn cmd_list(vault: &Vault, tag: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_remove(vault: &mut Vault, key: &str) -> Result<()> {
-    vault.remove(key)?;
-    vault.save()?;
-    eprintln!("Secret '{}' removed", key.green());
-    Ok(())
 fn cmd_load(
     vault: &mut Vault,
     secrets: Vec<(String, SecretString)>,
@@ -203,6 +217,55 @@ fn cmd_load(
     eprintln!("Saved {} secret(s)", num_secrets.green());
     Ok(())
 }
+
+fn cmd_remove(vault: &mut Vault, pattern: &str) -> Result<()> {
+    let regex = full_match_regex(pattern)?;
+
+    let mut matched_keys: Vec<String> = vault
+        .list(None)
+        .iter()
+        .filter(|e| regex.is_match(&e.key))
+        .map(|e| e.key.clone())
+        .collect();
+    matched_keys.sort();
+
+    ensure!(!matched_keys.is_empty(), "No secrets match '{pattern}'");
+
+    let to_remove = if matched_keys.len() == 1 {
+        matched_keys
+    } else {
+        let defaults = vec![true; matched_keys.len()];
+        let selections = MultiSelect::new()
+            .with_prompt("Select secrets to remove")
+            .items(&matched_keys)
+            .defaults(&defaults)
+            .interact()?;
+
+        if selections.is_empty() {
+            eprintln!("Nothing removed");
+            return Ok(());
+        }
+
+        selections
+            .iter()
+            .map(|&i| matched_keys[i].clone())
+            .collect()
+    };
+
+    let removed = vault.remove_many(&to_remove);
+    vault.save()?;
+
+    for entry in &removed {
+        eprintln!("Removed '{}'", entry.key.green());
+    }
+
+    Ok(())
+}
+
+/// Compile a pattern into a regex anchored for full-match semantics.
+fn full_match_regex(pattern: &str) -> Result<Regex> {
+    let anchored = format!("^(?:{pattern})$");
+    Regex::new(&anchored).map_err(|e| eyre!("Invalid pattern: {e}"))
 }
 
 fn cmd_tag(vault: &mut Vault, key: &str, tags: Vec<String>) -> Result<()> {

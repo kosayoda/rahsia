@@ -100,6 +100,11 @@ impl Vault {
             .ok_or_else(|| Error::SecretNotFound(key.to_string()))
     }
 
+    /// Remove multiple secrets by key. Returns the removed entries.
+    pub fn remove_many(&mut self, keys: &[String]) -> Vec<SecretEntry> {
+        keys.iter().filter_map(|k| self.entries.remove(k)).collect()
+    }
+
     /// List all secret entries, optionally filtered by tag.
     pub fn list(&self, tag: Option<&str>) -> Vec<&SecretEntry> {
         self.entries
@@ -251,6 +256,36 @@ mod tests {
 
         vault.untag("KEY", &["new-tag".into()]).unwrap();
         assert!(!vault.get("KEY").unwrap().has_tag("new-tag"));
+    }
+
+    #[test]
+    fn remove_many_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, password) = test_vault(dir.path());
+
+        let mut vault = Vault::create(&path, password).unwrap();
+        vault.set("AWS_KEY".into(), "1".into(), vec![]);
+        vault.set("AWS_SECRET".into(), "2".into(), vec![]);
+        vault.set("GH_TOKEN".into(), "3".into(), vec![]);
+
+        let removed = vault.remove_many(&["AWS_KEY".into(), "AWS_SECRET".into()]);
+        assert_eq!(removed.len(), 2);
+        assert!(vault.get("AWS_KEY").is_err());
+        assert!(vault.get("AWS_SECRET").is_err());
+        assert!(vault.get("GH_TOKEN").is_ok());
+    }
+
+    #[test]
+    fn remove_many_ignores_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, password) = test_vault(dir.path());
+
+        let mut vault = Vault::create(&path, password).unwrap();
+        vault.set("A".into(), "1".into(), vec![]);
+
+        let removed = vault.remove_many(&["A".into(), "NONEXISTENT".into()]);
+        assert_eq!(removed.len(), 1);
+        assert!(vault.get("A").is_err());
     }
 
     #[test]

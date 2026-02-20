@@ -105,6 +105,21 @@ impl Vault {
         keys.iter().filter_map(|k| self.entries.remove(k)).collect()
     }
 
+    /// Rename a secret from `old` to `new`.
+    ///
+    /// Preserves the value, tags, and creation timestamp. Updates the key name
+    /// and `updated_at`. If `new` already exists, it is overwritten.
+    pub fn rename(&mut self, old: &str, new: String) -> Result<()> {
+        let mut entry = self
+            .entries
+            .remove(old)
+            .ok_or_else(|| Error::SecretNotFound(old.to_string()))?;
+        entry.key = new.clone();
+        entry.updated_at = jiff::Timestamp::now();
+        self.entries.insert(new, entry);
+        Ok(())
+    }
+
     /// List all secret entries, optionally filtered by tag.
     pub fn list(&self, tag: Option<&str>) -> Vec<&SecretEntry> {
         self.entries
@@ -286,6 +301,33 @@ mod tests {
         let removed = vault.remove_many(&["A".into(), "NONEXISTENT".into()]);
         assert_eq!(removed.len(), 1);
         assert!(vault.get("A").is_err());
+    }
+
+    #[test]
+    fn rename_preserves_value_and_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, password) = test_vault(dir.path());
+
+        let mut vault = Vault::create(&path, password).unwrap();
+        vault.set("OLD".into(), "secret".into(), vec!["prod".into()]);
+
+        vault.rename("OLD", "NEW".into()).unwrap();
+
+        assert!(vault.get("OLD").is_err());
+        let entry = vault.get("NEW").unwrap();
+        assert_eq!(entry.value.expose_secret(), "secret");
+        assert_eq!(entry.tags, vec!["prod"]);
+        assert_eq!(entry.key, "NEW");
+    }
+
+    #[test]
+    fn rename_missing_key_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, password) = test_vault(dir.path());
+
+        let mut vault = Vault::create(&path, password).unwrap();
+        let result = vault.rename("NONEXISTENT", "NEW".into());
+        assert!(matches!(result, Err(Error::SecretNotFound(_))));
     }
 
     #[test]

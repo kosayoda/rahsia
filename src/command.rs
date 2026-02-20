@@ -1,6 +1,6 @@
 use clap::Subcommand;
 use color_eyre::{
-    eyre::{ensure, Context, OptionExt},
+    eyre::{bail, ensure, Context, OptionExt},
     owo_colors::OwoColorize,
     Result,
 };
@@ -74,6 +74,15 @@ pub enum SharedCommand {
         #[arg(long = "tag", short = 't', value_delimiter = ',')]
         tags: Vec<String>,
     },
+
+    /// Rename a secret key
+    Rename {
+        /// The current key name.
+        old: Option<String>,
+
+        /// The new key name.
+        new: Option<String>,
+    },
 }
 
 /// Dispatch a shared command against an open vault.
@@ -108,6 +117,11 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
             let tags = prompt_tags(tags)?;
             let secrets = prompt_secrets()?;
             cmd_load(vault, secrets, tags)
+        }
+        SharedCommand::Rename { old, new } => {
+            let old = prompt_key(old)?;
+            let new = prompt_key(new)?;
+            cmd_rename(vault, &old, new)
         }
     }
 }
@@ -349,5 +363,27 @@ fn cmd_untag(vault: &mut Vault, pattern: &str, tags: &[String]) -> Result<()> {
         eprintln!("Updated {}", key.green());
     }
 
+    Ok(())
+}
+
+fn cmd_rename(vault: &mut Vault, old: &str, new: String) -> Result<()> {
+    if vault.get(old).is_err() {
+        bail!("Secret '{}' not found", old.red());
+    }
+
+    if vault.get(&new).is_ok() {
+        let overwrite = Confirm::new()
+            .with_prompt(format!("'{}' already exists. Overwrite?", new.yellow()))
+            .default(false)
+            .interact()?;
+        if !overwrite {
+            eprintln!("Aborted");
+            return Ok(());
+        }
+    }
+
+    vault.rename(old, new.clone())?;
+    vault.save()?;
+    eprintln!("Renamed '{}' to '{}'", old.green(), new.green());
     Ok(())
 }

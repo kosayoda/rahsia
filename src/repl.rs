@@ -32,6 +32,9 @@ enum ReplCommand {
     /// List all unique tags in the vault
     Tags,
 
+    /// List all namespaces in the vault
+    Namespaces,
+
     /// Change the vault password
     UpdatePassword,
 
@@ -52,6 +55,9 @@ const COMMANDS: &[&str] = &[
     "list",
     "load",
     "ls",
+    "move",
+    "mv",
+    "namespaces",
     "quit",
     "remove",
     "rename",
@@ -127,10 +133,12 @@ pub fn run(vault: &mut Vault) -> Result<()> {
     );
 
     loop {
-        // Update key list for tab completion.
+        // Update key list for tab completion (all keys across all namespaces).
         if let Some(helper) = rl.helper_mut() {
-            let mut keys: Vec<String> = vault.list(None).iter().map(|e| e.key.clone()).collect();
+            let mut keys: Vec<String> =
+                vault.list_all(None).iter().map(|e| e.key.clone()).collect();
             keys.sort();
+            keys.dedup();
             helper.keys = keys;
         }
 
@@ -158,12 +166,22 @@ pub fn run(vault: &mut Vault) -> Result<()> {
                             eprintln!();
                         }
                         ReplCommand::Tags => {
-                            let tags = vault.tags();
+                            let tags = vault.tags("");
                             if tags.is_empty() {
                                 eprintln!("No tags found");
                             } else {
                                 for tag in tags {
                                     println!("{tag}");
+                                }
+                            }
+                        }
+                        ReplCommand::Namespaces => {
+                            let namespaces = vault.namespaces();
+                            if namespaces.is_empty() {
+                                eprintln!("No namespaces found");
+                            } else {
+                                for ns in namespaces {
+                                    println!("{ns}");
                                 }
                             }
                         }
@@ -179,18 +197,14 @@ pub fn run(vault: &mut Vault) -> Result<()> {
                         }
                     },
                     Err(e) => {
-                        // Clap errors include --help output, version, etc.
-                        // Print them without the "Error:" prefix for help.
                         eprint!("{e}");
                     }
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: continue the loop
                 continue;
             }
             Err(ReadlineError::Eof) => {
-                // Ctrl-D: exit
                 break;
             }
             Err(e) => {

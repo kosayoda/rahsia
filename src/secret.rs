@@ -4,6 +4,9 @@ use secrecy::SecretString;
 
 /// A single secret entry stored in the vault.
 pub struct SecretEntry {
+    /// The namespace, or empty string for the default namespace.
+    pub namespace: String,
+
     /// The key name, e.g. `AWS_ACCESS_KEY_ID`.
     pub key: String,
 
@@ -21,9 +24,10 @@ pub struct SecretEntry {
 }
 
 impl SecretEntry {
-    pub fn new(key: String, value: SecretString, tags: Vec<String>) -> Self {
+    pub fn new(namespace: String, key: String, value: SecretString, tags: Vec<String>) -> Self {
         let now = jiff::Timestamp::now();
         Self {
+            namespace,
             key,
             value,
             tags,
@@ -42,6 +46,7 @@ impl SecretEntry {
 impl fmt::Debug for SecretEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretEntry")
+            .field("namespace", &self.namespace)
             .field("key", &self.key)
             .field("value", &"[REDACTED]")
             .field("tags", &self.tags)

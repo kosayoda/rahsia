@@ -52,6 +52,10 @@ enum Command {
 
     /// Run the given command with the specified secrets
     Run {
+        /// Load all secrets from this namespace.
+        #[arg(long = "namespace", short = 'n')]
+        namespace: Option<String>,
+
         /// These keys will be loaded.
         #[arg(long = "key", short = 'k', value_delimiter = ',')]
         keys: Vec<String>,
@@ -86,6 +90,7 @@ fn main() -> Result<()> {
             rahsia::repl::run(&mut vault)
         }
         Command::Run {
+            namespace,
             keys,
             tags,
             command: cmd,
@@ -93,7 +98,7 @@ fn main() -> Result<()> {
             let mut vault = open_vault(&vault_path)?;
             let tags = prompt_tags(tags)?;
             let keys = prompt_keys(keys)?;
-            cmd_run(&mut vault, keys, tags, cmd)
+            cmd_run(&mut vault, namespace, keys, tags, cmd)
         }
         Command::Shared(shared) => {
             let mut vault = open_vault(&vault_path)?;
@@ -149,41 +154,50 @@ fn cmd_update_password(vault: &mut Vault) -> Result<()> {
 
 fn cmd_run(
     vault: &mut Vault,
+    namespace: Option<String>,
     mut keys: Vec<String>,
     tags: Vec<String>,
     command: Vec<String>,
 ) -> Result<()> {
     ensure!(
-        !keys.is_empty() || !tags.is_empty(),
-        "No keys or tags specified. Use {} or {} to select secrets to inject.",
+        namespace.is_some() || !keys.is_empty() || !tags.is_empty(),
+        "No namespace, keys, or tags specified. Use {}, {}, or {} to select secrets to inject.",
+        "--namespace".yellow(),
         "--key".yellow(),
         "--tag".yellow()
     );
 
-    let entries = vault.list(None);
+    let ns = namespace.as_deref().unwrap_or("");
+    let entries = vault.list(ns, None);
 
     let mut secrets = vec![];
-    for entry in entries {
-        if tags.iter().any(|t| entry.has_tag(t)) {
+
+    if namespace.is_some() && keys.is_empty() && tags.is_empty() {
+        // -n only: inject all secrets from namespace
+        secrets = entries;
+    } else {
+        for entry in entries {
+            if tags.iter().any(|t| entry.has_tag(t)) {
+                if let Some(idx) = keys.iter().position(|k| k == &entry.key) {
+                    keys.swap_remove(idx);
+                }
+                secrets.push(entry);
+                continue;
+            }
+
             if let Some(idx) = keys.iter().position(|k| k == &entry.key) {
                 keys.swap_remove(idx);
+                secrets.push(entry);
+                continue;
             }
-            secrets.push(entry);
-            continue;
         }
 
-        if let Some(idx) = keys.iter().position(|k| k == &entry.key) {
-            keys.swap_remove(idx);
-            secrets.push(entry);
-            continue;
-        }
+        ensure!(
+            keys.is_empty(),
+            "One or more keys not found: {}",
+            keys.join(",")
+        );
     }
-
-    ensure!(
-        keys.is_empty(),
-        "One or more keys not found: {}",
-        keys.join(",")
-    );
 
     ensure!(
         !secrets.is_empty(),

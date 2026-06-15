@@ -51,6 +51,7 @@ enum ReplCommand {
 
 const COMMANDS: &[&str] = &[
     "exit",
+    "export",
     "get",
     "help",
     "list",

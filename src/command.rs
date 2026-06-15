@@ -103,6 +103,17 @@ pub enum SharedCommand {
         tags: Vec<String>,
     },
 
+    /// Export secrets in .env format
+    Export {
+        /// Only export secrets from this namespace.
+        #[arg(long = "namespace", short = 'n')]
+        namespace: Option<String>,
+
+        /// Filter by tag.
+        #[arg(long = "tag", short = 't')]
+        tag: Option<String>,
+    },
+
     /// Rename a secret key
     Rename {
         /// The current key name.
@@ -161,6 +172,9 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
             pattern.as_deref(),
             tag.as_deref(),
         ),
+        SharedCommand::Export { namespace, tag } => {
+            cmd_export(vault, namespace.as_deref(), tag.as_deref())
+        }
         SharedCommand::Remove { key, namespace } => {
             let ns = prompt_namespace(vault, namespace)?;
             let pattern = prompt_key(key)?;
@@ -478,6 +492,31 @@ fn print_grouped(entries: &[crate::secret::SecretEntry]) {
     }
 }
 
+fn cmd_export(vault: &Vault, namespace: Option<&str>, tag: Option<&str>) -> Result<()> {
+    let entries = match namespace {
+        Some(ns) => vault.list(ns, tag),
+        None => vault.list_all(tag),
+    };
+
+    ensure!(!entries.is_empty(), "No secrets to export");
+
+    for entry in entries {
+        let value = entry.value.expose_secret();
+        let needs_quoting = value.contains(|c: char| c.is_whitespace() || c == '#' || c == '"');
+        if needs_quoting {
+            println!(
+                "{}=\"{}\"",
+                entry.key,
+                value.replace('\\', "\\\\").replace('"', "\\\"")
+            );
+        } else {
+            println!("{}={}", entry.key, value);
+        }
+    }
+
+    Ok(())
+}
+
 fn cmd_load(
     vault: &mut Vault,
     ns: &str,
@@ -627,7 +666,11 @@ fn cmd_move(vault: &mut Vault, from_ns: &str, key: &str, to_ns: &str) -> Result<
     vault.move_secret(from_ns, key, to_ns)?;
     vault.save()?;
 
-    let from_label = if from_ns.is_empty() { "(none)" } else { from_ns };
+    let from_label = if from_ns.is_empty() {
+        "(none)"
+    } else {
+        from_ns
+    };
     let to_label = if to_ns.is_empty() { "(none)" } else { to_ns };
     eprintln!(
         "Moved '{}' from {} to {}",

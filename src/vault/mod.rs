@@ -1,9 +1,8 @@
 pub mod crypto;
 pub mod store;
 
-use std::collections::HashMap;
-
 use camino::{Utf8Path, Utf8PathBuf};
+use indexmap::IndexMap;
 use secrecy::SecretString;
 use zeroize::Zeroize;
 
@@ -18,7 +17,7 @@ pub struct Vault {
     path: Utf8PathBuf,
     salt: [u8; 16],
     key: [u8; 32],
-    entries: HashMap<String, SecretEntry>,
+    entries: IndexMap<String, SecretEntry>,
 }
 
 impl Vault {
@@ -36,7 +35,7 @@ impl Vault {
             path: path.to_owned(),
             salt,
             key,
-            entries: HashMap::new(),
+            entries: IndexMap::new(),
         };
 
         vault.save()?;
@@ -51,7 +50,8 @@ impl Vault {
         let mut plaintext = crypto::decrypt(&encrypted, &key)?;
         let entries = serde_json::from_slice(&plaintext);
         plaintext.zeroize();
-        let entries: HashMap<String, SecretEntry> = entries?;
+        let mut entries: IndexMap<String, SecretEntry> = entries?;
+        entries.sort_keys();
 
         Ok(Self {
             path: path.to_owned(),
@@ -82,6 +82,7 @@ impl Vault {
             None => {
                 let entry = SecretEntry::new(key.clone(), value, tags);
                 self.entries.insert(key, entry);
+                self.entries.sort_keys();
             }
         }
     }
@@ -96,13 +97,15 @@ impl Vault {
     /// Remove a secret by key.
     pub fn remove(&mut self, key: &str) -> Result<SecretEntry> {
         self.entries
-            .remove(key)
+            .shift_remove(key)
             .ok_or_else(|| Error::SecretNotFound(key.to_string()))
     }
 
     /// Remove multiple secrets by key. Returns the removed entries.
     pub fn remove_many(&mut self, keys: &[String]) -> Vec<SecretEntry> {
-        keys.iter().filter_map(|k| self.entries.remove(k)).collect()
+        keys.iter()
+            .filter_map(|k| self.entries.shift_remove(k))
+            .collect()
     }
 
     /// Rename a secret from `old` to `new`.
@@ -112,11 +115,12 @@ impl Vault {
     pub fn rename(&mut self, old: &str, new: String) -> Result<()> {
         let mut entry = self
             .entries
-            .remove(old)
+            .shift_remove(old)
             .ok_or_else(|| Error::SecretNotFound(old.to_string()))?;
         entry.key = new.clone();
         entry.updated_at = jiff::Timestamp::now();
         self.entries.insert(new, entry);
+        self.entries.sort_keys();
         Ok(())
     }
 

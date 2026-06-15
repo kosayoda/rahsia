@@ -168,7 +168,7 @@ pub fn run(vault: &mut Vault) -> Result<()> {
                             eprintln!();
                         }
                         ReplCommand::Tags => {
-                            let tags = vault.tags("");
+                            let tags = vault.tags_all();
                             if tags.is_empty() {
                                 eprintln!("No tags found");
                             } else {

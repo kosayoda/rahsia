@@ -245,6 +245,11 @@ impl Vault {
         self.tags_inner(ns).unwrap_or_default()
     }
 
+    /// Get all unique tags across all namespaces.
+    pub fn tags_all(&self) -> Vec<String> {
+        self.tags_all_inner().unwrap_or_default()
+    }
+
     /// Get all unique namespace names (excluding the default empty namespace).
     pub fn namespaces(&self) -> Vec<String> {
         self.namespaces_inner().unwrap_or_default()
@@ -386,6 +391,23 @@ impl Vault {
 
         let rows = stmt
             .query_map(rusqlite::params![ns], |row| row.get::<_, String>(0))
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    fn tags_all_inner(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT j.value
+                 FROM secrets, json_each(secrets.tags) AS j
+                 ORDER BY j.value",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| Error::Database(e.to_string()))?;
 
         Ok(rows.filter_map(|r| r.ok()).collect())

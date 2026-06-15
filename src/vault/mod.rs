@@ -159,8 +159,11 @@ impl Vault {
             .get_mut(key)
             .ok_or_else(|| Error::SecretNotFound(key.to_string()))?;
 
+        let before = entry.tags.len();
         entry.tags.retain(|t| !tags.contains(t));
-        entry.updated_at = jiff::Timestamp::now();
+        if entry.tags.len() != before {
+            entry.updated_at = jiff::Timestamp::now();
+        }
 
         Ok(())
     }

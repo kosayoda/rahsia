@@ -288,19 +288,39 @@ fn cmd_load(
     secrets: Vec<(String, SecretString)>,
     tags: Vec<String>,
 ) -> Result<()> {
-    let existing = secrets.iter().filter(|(k, _)| vault.get(k).is_ok()).count();
-    let num_secrets = secrets.len();
+    let existing: Vec<String> = secrets
+        .iter()
+        .filter(|(k, _)| vault.get(k).is_ok())
+        .map(|(k, _)| k.clone())
+        .collect();
 
+    if !existing.is_empty() {
+        eprintln!(
+            "The following keys already exist: {}",
+            existing.join(", ").yellow()
+        );
+        let overwrite = Confirm::new()
+            .with_prompt(format!("Overwrite {} existing secret(s)?", existing.len()))
+            .default(false)
+            .interact()?;
+        if !overwrite {
+            eprintln!("Aborted");
+            return Ok(());
+        }
+    }
+
+    let num_secrets = secrets.len();
+    let num_existing = existing.len();
     for (key, value) in secrets {
         vault.set(key.clone(), value, tags.clone());
     }
     vault.save()?;
 
-    if existing > 0 {
+    if num_existing > 0 {
         eprintln!(
             "Saved {} secret(s) ({} overwritten)",
             num_secrets.green(),
-            existing.yellow()
+            num_existing.yellow()
         );
     } else {
         eprintln!("Saved {} secret(s)", num_secrets.green());

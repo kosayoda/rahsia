@@ -36,6 +36,10 @@ pub enum SharedCommand {
         /// Namespace for this secret.
         #[arg(long = "namespace", short = 'n')]
         namespace: Option<String>,
+
+        /// Copy value to clipboard instead of printing.
+        #[arg(long = "copy", short = 'c')]
+        copy: bool,
     },
 
     /// List secret keys in the vault
@@ -157,10 +161,15 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
             let value = prompt_value(&key)?;
             cmd_set(vault, &ns, key, value, tags)
         }
-        SharedCommand::Get { key, namespace } => {
+        SharedCommand::Get {
+            key,
+            namespace,
+            copy,
+        } => {
             let ns = prompt_namespace(vault, namespace)?;
             let key = prompt_key(key)?;
-            cmd_get(vault, &ns, &key)
+            let copy = if copy { Some(true) } else { None };
+            cmd_get(vault, &ns, &key, copy)
         }
         SharedCommand::List {
             pattern,
@@ -396,9 +405,31 @@ fn cmd_set(
     Ok(())
 }
 
-fn cmd_get(vault: &Vault, ns: &str, key: &str) -> Result<()> {
+fn cmd_get(vault: &Vault, ns: &str, key: &str, copy: Option<bool>) -> Result<()> {
     let entry = vault.get(ns, key)?;
-    println!("{}", entry.value.expose_secret());
+
+    let copy = match copy {
+        Some(v) => v,
+        None => {
+            let selection = Select::new()
+                .with_prompt("Output")
+                .items(["Print to stdout", "Copy to clipboard"])
+                .default(0)
+                .interact()?;
+            selection == 1
+        }
+    };
+
+    if copy {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to access clipboard: {e}"))?;
+        clipboard
+            .set_text(entry.value.expose_secret())
+            .map_err(|e| color_eyre::eyre::eyre!("Failed to copy to clipboard: {e}"))?;
+        eprintln!("Copied '{}' to clipboard", key.green());
+    } else {
+        println!("{}", entry.value.expose_secret());
+    }
     Ok(())
 }
 

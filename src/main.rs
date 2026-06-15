@@ -15,7 +15,7 @@ use rahsia::command::{self, prompt_keys, prompt_tags, SharedCommand};
 use rahsia::vault::Vault;
 
 #[derive(Parser)]
-#[command(name = "rahsia", version, about = "Runtime secret management")]
+#[command(name = "rahsia", version, about = "Runtime secret management", styles = rahsia::clap_styles())]
 struct Cli {
     /// Path to the vault file [default: $XDG_DATA_HOME/rahsia/vault.db]
     #[arg(long, global = true)]

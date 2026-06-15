@@ -6,7 +6,7 @@ description = "Runtime secret management"
 
 [dependencies]
 camino = "1.2.2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "color"] }
 color-eyre = "0.6.5"
 dialoguer = { version = "0.12", features = ["password"] }
 dirs = "6"

@@ -437,9 +437,13 @@ fn apply_regex_filter(
 
 fn print_entry(entry: &crate::secret::SecretEntry) {
     if entry.tags.is_empty() {
-        println!("{}", entry.key);
+        println!("{}", entry.key.green());
     } else {
-        println!("{}  [{}]", entry.key, entry.tags.join(", "));
+        println!(
+            "{}  {}",
+            entry.key.green(),
+            format!("[{}]", entry.tags.join(", ")).dimmed()
+        );
     }
 }
 
@@ -455,7 +459,7 @@ fn print_grouped(entries: &[crate::secret::SecretEntry]) {
                 println!();
             }
             if !ns.is_empty() {
-                println!("{}", ns.cyan());
+                println!("{}", ns.cyan().bold());
             }
             current_ns = Some(ns);
             first = false;
@@ -463,9 +467,13 @@ fn print_grouped(entries: &[crate::secret::SecretEntry]) {
 
         let indent = if ns.is_empty() { "" } else { "  " };
         if entry.tags.is_empty() {
-            println!("{indent}{}", entry.key);
+            println!("{indent}{}", entry.key.green());
         } else {
-            println!("{indent}{}  [{}]", entry.key, entry.tags.join(", "));
+            println!(
+                "{indent}{}  {}",
+                entry.key.green(),
+                format!("[{}]", entry.tags.join(", ")).dimmed()
+            );
         }
     }
 }

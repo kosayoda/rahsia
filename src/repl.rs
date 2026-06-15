@@ -15,7 +15,8 @@ use crate::vault::Vault;
     name = "",
     no_binary_name = true,
     disable_help_subcommand = true,
-    disable_version_flag = true
+    disable_version_flag = true,
+    styles = crate::clap_styles()
 )]
 struct ReplCli {
     #[command(subcommand)]
@@ -142,7 +143,7 @@ pub fn run(vault: &mut Vault) -> Result<()> {
             helper.keys = keys;
         }
 
-        match rl.readline("rahsia> ") {
+        match rl.readline(&format!("{} ", "rahsia >".yellow())) {
             Ok(line) => {
                 let line = line.trim();
                 if line.is_empty() {

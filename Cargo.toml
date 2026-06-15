@@ -5,25 +5,24 @@ edition = "2024"
 description = "Runtime secret management"
 
 [dependencies]
-aes-gcm = "0.10"
-argon2 = "0.5"
 camino = "1.2.2"
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6.5"
 dialoguer = { version = "0.12", features = ["password"] }
 dirs = "6"
 dotenvy = "0.15.7"
-jiff = { version = "0.2.20", features = ["serde"] }
-rand = "0.9"
+jiff = "0.2.20"
 regex = "1"
-secrecy = { version = "0.10.3", features = ["serde"] }
-serde = { version = "1", features = ["derive"] }
+secrecy = "0.10.3"
+serde = "1"
 serde_json = "1"
 thiserror = "2"
 rustyline = { version = "15", features = ["derive"] }
 shell-words = "1"
-zeroize = { version = "1", features = ["derive"] }
-indexmap = { version = "2.14.0", features = ["serde"] }
+zeroize = "1"
+rusqlite = { version = "0.40.1", features = [
+  "bundled-sqlcipher-vendored-openssl",
+] }
 
 [dev-dependencies]
 tempfile = "3"

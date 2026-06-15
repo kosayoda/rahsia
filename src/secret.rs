@@ -1,19 +1,13 @@
 use std::fmt;
 
-use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use secrecy::SecretString;
 
 /// A single secret entry stored in the vault.
-#[derive(Clone, Serialize, Deserialize)]
 pub struct SecretEntry {
     /// The key name, e.g. `AWS_ACCESS_KEY_ID`.
     pub key: String,
 
     /// The secret value. Zeroized on drop, redacted in debug output.
-    #[serde(
-        serialize_with = "serialize_secret",
-        deserialize_with = "deserialize_secret"
-    )]
     pub value: SecretString,
 
     /// Tags for grouping/filtering, e.g. `["aws", "prod"]`.
@@ -55,17 +49,4 @@ impl fmt::Debug for SecretEntry {
             .field("updated_at", &self.updated_at)
             .finish()
     }
-}
-
-fn serialize_secret<S: serde::Serializer>(
-    secret: &SecretString,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    secret.expose_secret().serialize(serializer)
-}
-
-fn deserialize_secret<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<SecretString, D::Error> {
-    String::deserialize(deserializer).map(SecretString::from)
 }

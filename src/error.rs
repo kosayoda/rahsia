@@ -27,8 +27,8 @@ pub enum Error {
     #[error("vault data is corrupted or incompatible")]
     Serialization(#[from] serde_json::Error),
 
-    #[error("crypto error: {0}")]
-    Crypto(String),
+    #[error("database error: {0}")]
+    Database(String),
 }
 
 impl Error {

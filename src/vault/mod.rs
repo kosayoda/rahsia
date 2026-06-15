@@ -1,178 +1,242 @@
-pub mod crypto;
-pub mod store;
-
 use camino::{Utf8Path, Utf8PathBuf};
-use indexmap::IndexMap;
-use secrecy::SecretString;
-use zeroize::Zeroize;
+use rusqlite::Connection;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::error::{Error, Result};
 use crate::secret::SecretEntry;
 
-/// An unlocked vault holding secrets in memory.
-///
-/// The derived encryption key is held in memory for the lifetime of the vault,
-/// avoiding repeated key derivation on every save. The key is zeroized on drop.
+const DEFAULT_NS: &str = "";
+
 pub struct Vault {
+    #[allow(dead_code)]
     path: Utf8PathBuf,
-    salt: [u8; 16],
-    key: [u8; 32],
-    entries: IndexMap<String, SecretEntry>,
+    conn: Connection,
 }
 
 impl Vault {
     /// Create a new vault at `path`, encrypted with `password`.
-    ///
-    /// Returns an error if a vault already exists at the path.
     pub fn create(path: &Utf8Path, password: &[u8]) -> Result<Self> {
         if path.exists() {
             return Err(Error::VaultAlreadyExists(path.to_owned()));
         }
 
-        let salt = crypto::generate_salt();
-        let key = crypto::derive_key(password, &salt)?;
-        let vault = Self {
-            path: path.to_owned(),
-            salt,
-            key,
-            entries: IndexMap::new(),
-        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::io(e, format!("failed to create directory {parent}")))?;
+        }
 
-        vault.save()?;
-        Ok(vault)
+        let conn =
+            Connection::open(path.as_std_path()).map_err(|e| Error::Database(e.to_string()))?;
+
+        Self::set_key(&conn, password)?;
+        Self::init_schema(&conn)?;
+        Self::restrict_permissions(path)?;
+
+        Ok(Self {
+            path: path.to_owned(),
+            conn,
+        })
     }
 
     /// Open an existing vault, decrypting it with `password`.
     pub fn open(path: &Utf8Path, password: &[u8]) -> Result<Self> {
-        let (salt, encrypted) = store::read_vault_file(path)?;
+        if !path.exists() {
+            return Err(Error::VaultNotFound(path.to_owned()));
+        }
 
-        let key = crypto::derive_key(password, &salt)?;
-        let mut plaintext = crypto::decrypt(&encrypted, &key)?;
-        let entries = serde_json::from_slice(&plaintext);
-        plaintext.zeroize();
-        let mut entries: IndexMap<String, SecretEntry> = entries?;
-        entries.sort_keys();
+        let conn =
+            Connection::open(path.as_std_path()).map_err(|e| Error::Database(e.to_string()))?;
+
+        Self::set_key(&conn, password)?;
+
+        // Verify the key is correct.
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+            r.get::<_, i32>(0)
+        })
+        .map_err(|_| Error::BadPassword)?;
 
         Ok(Self {
             path: path.to_owned(),
-            salt,
-            key,
-            entries,
+            conn,
         })
     }
 
-    /// Encrypt and save the vault to disk.
+    /// No-op. Mutations are written through to the database immediately.
     pub fn save(&self) -> Result<()> {
-        let mut plaintext = serde_json::to_vec(&self.entries)?;
-        let result = crypto::encrypt(&plaintext, &self.key);
-        plaintext.zeroize();
-        let encrypted = result?;
-        store::write_vault_file(&self.path, &self.salt, &encrypted)?;
         Ok(())
     }
 
-    /// Re-encrypt the vault with a new password.
-    pub fn change_password(&mut self, new_password: &[u8]) -> Result<()> {
-        let salt = crypto::generate_salt();
-        let key = crypto::derive_key(new_password, &salt)?;
-        crypto::zeroize_key(&mut self.key);
-        self.salt = salt;
-        self.key = key;
-        self.save()
-    }
-
     /// Set a secret. If the key already exists, its value and tags are updated.
-    pub fn set(&mut self, key: String, value: SecretString, tags: Vec<String>) {
-        match self.entries.get_mut(&key) {
-            Some(existing) => {
-                existing.value = value;
-                existing.tags = tags;
-                existing.updated_at = jiff::Timestamp::now();
-            }
-            None => {
-                let entry = SecretEntry::new(key.clone(), value, tags);
-                self.entries.insert(key, entry);
-                self.entries.sort_keys();
-            }
-        }
+    pub fn set(&mut self, key: String, value: SecretString, tags: Vec<String>) -> Result<()> {
+        let now = jiff::Timestamp::now().to_string();
+        let tags_json = serde_json::to_string(&tags).map_err(|e| Error::Database(e.to_string()))?;
+
+        self.conn
+            .execute(
+                "INSERT INTO secrets (namespace, key, value, tags, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                 ON CONFLICT(namespace, key) DO UPDATE SET
+                   value = excluded.value,
+                   tags = excluded.tags,
+                   updated_at = excluded.updated_at",
+                rusqlite::params![DEFAULT_NS, key, value.expose_secret(), tags_json, now],
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(())
     }
 
     /// Get a secret entry by key.
-    pub fn get(&self, key: &str) -> Result<&SecretEntry> {
-        self.entries
-            .get(key)
-            .ok_or_else(|| Error::SecretNotFound(key.to_string()))
+    pub fn get(&self, key: &str) -> Result<SecretEntry> {
+        self.conn
+            .query_row(
+                "SELECT key, value, tags, created_at, updated_at
+                 FROM secrets WHERE namespace = ?1 AND key = ?2",
+                rusqlite::params![DEFAULT_NS, key],
+                Self::row_to_entry,
+            )
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Error::SecretNotFound(key.to_string()),
+                _ => Error::Database(e.to_string()),
+            })
     }
 
     /// Remove a secret by key.
     pub fn remove(&mut self, key: &str) -> Result<SecretEntry> {
-        self.entries
-            .shift_remove(key)
-            .ok_or_else(|| Error::SecretNotFound(key.to_string()))
+        let entry = self.get(key)?;
+        self.conn
+            .execute(
+                "DELETE FROM secrets WHERE namespace = ?1 AND key = ?2",
+                rusqlite::params![DEFAULT_NS, key],
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(entry)
     }
 
     /// Remove multiple secrets by key. Returns the removed entries.
     pub fn remove_many(&mut self, keys: &[String]) -> Vec<SecretEntry> {
-        keys.iter()
-            .filter_map(|k| self.entries.shift_remove(k))
-            .collect()
+        keys.iter().filter_map(|k| self.remove(k).ok()).collect()
     }
 
     /// Rename a secret from `old` to `new`.
-    ///
-    /// Preserves the value, tags, and creation timestamp. Updates the key name
-    /// and `updated_at`. If `new` already exists, it is overwritten.
     pub fn rename(&mut self, old: &str, new: String) -> Result<()> {
-        let mut entry = self
-            .entries
-            .shift_remove(old)
-            .ok_or_else(|| Error::SecretNotFound(old.to_string()))?;
-        entry.key = new.clone();
-        entry.updated_at = jiff::Timestamp::now();
-        self.entries.insert(new, entry);
-        self.entries.sort_keys();
+        self.get(old)?;
+
+        let now = jiff::Timestamp::now().to_string();
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.execute(
+            "DELETE FROM secrets WHERE namespace = ?1 AND key = ?2",
+            rusqlite::params![DEFAULT_NS, &new],
+        )
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.execute(
+            "UPDATE secrets SET key = ?1, updated_at = ?2
+             WHERE namespace = ?3 AND key = ?4",
+            rusqlite::params![&new, now, DEFAULT_NS, old],
+        )
+        .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.commit().map_err(|e| Error::Database(e.to_string()))?;
         Ok(())
     }
 
     /// List all secret entries, optionally filtered by tag.
-    pub fn list(&self, tag: Option<&str>) -> Vec<&SecretEntry> {
-        self.entries
-            .values()
-            .filter(|e| match tag {
-                Some(t) => e.has_tag(t),
-                None => true,
-            })
-            .collect()
+    pub fn list(&self, tag: Option<&str>) -> Vec<SecretEntry> {
+        self.list_inner(tag).unwrap_or_default()
+    }
+
+    fn list_inner(&self, tag: Option<&str>) -> Result<Vec<SecretEntry>> {
+        match tag {
+            Some(t) => {
+                let mut stmt = self
+                    .conn
+                    .prepare(
+                        "SELECT key, value, tags, created_at, updated_at
+                         FROM secrets
+                         WHERE namespace = ?1
+                           AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?2)
+                         ORDER BY key",
+                    )
+                    .map_err(|e| Error::Database(e.to_string()))?;
+
+                let rows = stmt
+                    .query_map(rusqlite::params![DEFAULT_NS, t], Self::row_to_entry)
+                    .map_err(|e| Error::Database(e.to_string()))?;
+
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            }
+            None => {
+                let mut stmt = self
+                    .conn
+                    .prepare(
+                        "SELECT key, value, tags, created_at, updated_at
+                         FROM secrets
+                         WHERE namespace = ?1
+                         ORDER BY key",
+                    )
+                    .map_err(|e| Error::Database(e.to_string()))?;
+
+                let rows = stmt
+                    .query_map(rusqlite::params![DEFAULT_NS], Self::row_to_entry)
+                    .map_err(|e| Error::Database(e.to_string()))?;
+
+                Ok(rows.filter_map(|r| r.ok()).collect())
+            }
+        }
     }
 
     /// Add one or more tags to an existing secret.
     pub fn tag(&mut self, key: &str, tags: Vec<String>) -> Result<()> {
-        let entry = self
-            .entries
-            .get_mut(key)
-            .ok_or_else(|| Error::SecretNotFound(key.to_string()))?;
+        let mut entry = self.get(key)?;
+        let mut changed = false;
 
         for tag in tags {
             if !entry.tags.contains(&tag) {
                 entry.tags.push(tag);
-                entry.updated_at = jiff::Timestamp::now();
+                changed = true;
             }
+        }
+
+        if changed {
+            let now = jiff::Timestamp::now().to_string();
+            let tags_json =
+                serde_json::to_string(&entry.tags).map_err(|e| Error::Database(e.to_string()))?;
+
+            self.conn
+                .execute(
+                    "UPDATE secrets SET tags = ?1, updated_at = ?2
+                     WHERE namespace = ?3 AND key = ?4",
+                    rusqlite::params![tags_json, now, DEFAULT_NS, key],
+                )
+                .map_err(|e| Error::Database(e.to_string()))?;
         }
 
         Ok(())
     }
 
-    /// Remove a tag from an existing secret.
+    /// Remove tags from an existing secret.
     pub fn untag(&mut self, key: &str, tags: &[String]) -> Result<()> {
-        let entry = self
-            .entries
-            .get_mut(key)
-            .ok_or_else(|| Error::SecretNotFound(key.to_string()))?;
-
+        let mut entry = self.get(key)?;
         let before = entry.tags.len();
         entry.tags.retain(|t| !tags.contains(t));
+
         if entry.tags.len() != before {
-            entry.updated_at = jiff::Timestamp::now();
+            let now = jiff::Timestamp::now().to_string();
+            let tags_json =
+                serde_json::to_string(&entry.tags).map_err(|e| Error::Database(e.to_string()))?;
+
+            self.conn
+                .execute(
+                    "UPDATE secrets SET tags = ?1, updated_at = ?2
+                     WHERE namespace = ?3 AND key = ?4",
+                    rusqlite::params![tags_json, now, DEFAULT_NS, key],
+                )
+                .map_err(|e| Error::Database(e.to_string()))?;
         }
 
         Ok(())
@@ -180,20 +244,95 @@ impl Vault {
 
     /// Get all unique tags across all entries.
     pub fn tags(&self) -> Vec<String> {
-        let mut tags: Vec<String> = self
-            .entries
-            .values()
-            .flat_map(|e| e.tags.iter().cloned())
-            .collect();
-        tags.sort();
-        tags.dedup();
-        tags
+        self.tags_inner().unwrap_or_default()
     }
-}
 
-impl Drop for Vault {
-    fn drop(&mut self) {
-        crypto::zeroize_key(&mut self.key);
+    fn tags_inner(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT j.value
+                 FROM secrets, json_each(secrets.tags) AS j
+                 WHERE secrets.namespace = ?1
+                 ORDER BY j.value",
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![DEFAULT_NS], |row| row.get::<_, String>(0))
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Re-encrypt the vault with a new password.
+    pub fn change_password(&mut self, new_password: &[u8]) -> Result<()> {
+        let escaped = Self::escape_password(new_password);
+        self.conn
+            .execute_batch(&format!("PRAGMA rekey = '{escaped}'"))
+            .map_err(|e| Error::Database(e.to_string()))
+    }
+
+    // --- Private helpers ---
+
+    fn set_key(conn: &Connection, password: &[u8]) -> Result<()> {
+        let escaped = Self::escape_password(password);
+        conn.execute_batch(&format!("PRAGMA key = '{escaped}'"))
+            .map_err(|e| Error::Database(e.to_string()))
+    }
+
+    fn escape_password(password: &[u8]) -> String {
+        String::from_utf8_lossy(password).replace('\'', "''")
+    }
+
+    fn init_schema(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS secrets (
+                namespace  TEXT NOT NULL DEFAULT '',
+                key        TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                tags       TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (namespace, key)
+            );",
+        )
+        .map_err(|e| Error::Database(e.to_string()))
+    }
+
+    fn restrict_permissions(_path: &Utf8Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(_path.as_std_path(), std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| Error::io(e, format!("failed to set permissions on {_path}")))?;
+        }
+        Ok(())
+    }
+
+    fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretEntry> {
+        let key: String = row.get(0)?;
+        let value_str: String = row.get(1)?;
+        let tags_json: String = row.get(2)?;
+        let created_at_str: String = row.get(3)?;
+        let updated_at_str: String = row.get(4)?;
+
+        let value = SecretString::from(value_str);
+        let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+        let created_at: jiff::Timestamp = created_at_str
+            .parse()
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        let updated_at: jiff::Timestamp = updated_at_str
+            .parse()
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+
+        Ok(SecretEntry {
+            key,
+            value,
+            tags,
+            created_at,
+            updated_at,
+        })
     }
 }
 
@@ -204,7 +343,7 @@ mod tests {
 
     fn test_vault(dir: &std::path::Path) -> (Utf8PathBuf, &[u8]) {
         let dir: &Utf8Path = dir.try_into().unwrap();
-        let path = dir.join("test.vault");
+        let path = dir.join("test.db");
         let password = b"test-password";
         (path, password)
     }
@@ -238,8 +377,9 @@ mod tests {
         let (path, password) = test_vault(dir.path());
 
         let mut vault = Vault::create(&path, password).unwrap();
-        vault.set("MY_KEY".into(), "my_value".into(), vec!["aws".into()]);
-        vault.save().unwrap();
+        vault
+            .set("MY_KEY".into(), "my_value".into(), vec!["aws".into()])
+            .unwrap();
         drop(vault);
 
         let mut vault = Vault::open(&path, password).unwrap();
@@ -257,9 +397,15 @@ mod tests {
         let (path, password) = test_vault(dir.path());
 
         let mut vault = Vault::create(&path, password).unwrap();
-        vault.set("A".into(), "1".into(), vec!["aws".into()]);
-        vault.set("B".into(), "2".into(), vec!["github".into()]);
-        vault.set("C".into(), "3".into(), vec!["aws".into(), "prod".into()]);
+        vault
+            .set("A".into(), "1".into(), vec!["aws".into()])
+            .unwrap();
+        vault
+            .set("B".into(), "2".into(), vec!["github".into()])
+            .unwrap();
+        vault
+            .set("C".into(), "3".into(), vec!["aws".into(), "prod".into()])
+            .unwrap();
 
         let aws = vault.list(Some("aws"));
         assert_eq!(aws.len(), 2);
@@ -277,7 +423,7 @@ mod tests {
         let (path, password) = test_vault(dir.path());
 
         let mut vault = Vault::create(&path, password).unwrap();
-        vault.set("KEY".into(), "val".into(), vec![]);
+        vault.set("KEY".into(), "val".into(), vec![]).unwrap();
 
         vault.tag("KEY", vec!["new-tag".into()]).unwrap();
         assert!(vault.get("KEY").unwrap().has_tag("new-tag"));
@@ -296,9 +442,9 @@ mod tests {
         let (path, password) = test_vault(dir.path());
 
         let mut vault = Vault::create(&path, password).unwrap();
-        vault.set("AWS_KEY".into(), "1".into(), vec![]);
-        vault.set("AWS_SECRET".into(), "2".into(), vec![]);
-        vault.set("GH_TOKEN".into(), "3".into(), vec![]);
+        vault.set("AWS_KEY".into(), "1".into(), vec![]).unwrap();
+        vault.set("AWS_SECRET".into(), "2".into(), vec![]).unwrap();
+        vault.set("GH_TOKEN".into(), "3".into(), vec![]).unwrap();
 
         let removed = vault.remove_many(&["AWS_KEY".into(), "AWS_SECRET".into()]);
         assert_eq!(removed.len(), 2);
@@ -313,7 +459,7 @@ mod tests {
         let (path, password) = test_vault(dir.path());
 
         let mut vault = Vault::create(&path, password).unwrap();
-        vault.set("A".into(), "1".into(), vec![]);
+        vault.set("A".into(), "1".into(), vec![]).unwrap();
 
         let removed = vault.remove_many(&["A".into(), "NONEXISTENT".into()]);
         assert_eq!(removed.len(), 1);
@@ -326,7 +472,9 @@ mod tests {
         let (path, password) = test_vault(dir.path());
 
         let mut vault = Vault::create(&path, password).unwrap();
-        vault.set("OLD".into(), "secret".into(), vec!["prod".into()]);
+        vault
+            .set("OLD".into(), "secret".into(), vec!["prod".into()])
+            .unwrap();
 
         vault.rename("OLD", "NEW".into()).unwrap();
 
@@ -355,5 +503,52 @@ mod tests {
         Vault::create(&path, b"correct").unwrap();
         let result = Vault::open(&path, b"wrong");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn persistence_without_explicit_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, password) = test_vault(dir.path());
+
+        let mut vault = Vault::create(&path, password).unwrap();
+        vault.set("KEY".into(), "val".into(), vec![]).unwrap();
+        drop(vault);
+
+        let vault = Vault::open(&path, password).unwrap();
+        assert_eq!(vault.get("KEY").unwrap().value.expose_secret(), "val");
+    }
+
+    #[test]
+    fn change_password_allows_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, password) = test_vault(dir.path());
+
+        let mut vault = Vault::create(&path, password).unwrap();
+        vault.set("KEY".into(), "val".into(), vec![]).unwrap();
+        vault.change_password(b"new-password").unwrap();
+        drop(vault);
+
+        assert!(Vault::open(&path, b"test-password").is_err());
+
+        let vault = Vault::open(&path, b"new-password").unwrap();
+        assert_eq!(vault.get("KEY").unwrap().value.expose_secret(), "val");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_file_has_restricted_permissions() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (path, password) = test_vault(dir.path());
+
+        Vault::create(&path, password).unwrap();
+
+        let mode = std::fs::metadata(path.as_std_path()).unwrap().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "vault file should be owner-only (0600)"
+        );
     }
 }

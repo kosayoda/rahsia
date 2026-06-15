@@ -243,7 +243,7 @@ fn cmd_set(vault: &mut Vault, key: String, value: SecretString, tags: Vec<String
         }
     }
 
-    vault.set(key.clone(), value, tags);
+    vault.set(key.clone(), value, tags)?;
     vault.save()?;
     eprintln!("Secret '{}' saved", key.green());
     Ok(())
@@ -312,7 +312,7 @@ fn cmd_load(
     let num_secrets = secrets.len();
     let num_existing = existing.len();
     for (key, value) in secrets {
-        vault.set(key.clone(), value, tags.clone());
+        vault.set(key.clone(), value, tags.clone())?;
     }
     vault.save()?;
 

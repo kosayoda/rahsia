@@ -17,7 +17,7 @@ use rahsia::vault::Vault;
 #[derive(Parser)]
 #[command(name = "rahsia", version, about = "Runtime secret management")]
 struct Cli {
-    /// Path to the vault file [default: $XDG_DATA_HOME/rahsia/vault.enc]
+    /// Path to the vault file [default: $XDG_DATA_HOME/rahsia/vault.db]
     #[arg(long, global = true)]
     vault_path: Option<Utf8PathBuf>,
 
@@ -32,7 +32,7 @@ fn resolve_vault_path(explicit: Option<Utf8PathBuf>) -> Result<Utf8PathBuf> {
             let dir =
                 dirs::data_local_dir().ok_or_eyre("Could not determine local data directory")?;
             dir.join("rahsia")
-                .join("vault.enc")
+                .join("vault.db")
                 .try_into()
                 .context("Local data directory is not a valid UTF-8 path")
         }
@@ -165,16 +165,16 @@ fn cmd_run(
     let mut secrets = vec![];
     for entry in entries {
         if tags.iter().any(|t| entry.has_tag(t)) {
-            secrets.push(entry);
             if let Some(idx) = keys.iter().position(|k| k == &entry.key) {
                 keys.swap_remove(idx);
             }
+            secrets.push(entry);
             continue;
         }
 
         if let Some(idx) = keys.iter().position(|k| k == &entry.key) {
-            secrets.push(entry);
             keys.swap_remove(idx);
+            secrets.push(entry);
             continue;
         }
     }

@@ -17,23 +17,26 @@ use rahsia::vault::Vault;
 #[derive(Parser)]
 #[command(name = "rahsia", version, about = "Runtime secret management")]
 struct Cli {
-    /// Path to the vault file
-    #[arg(long, global = true, default_value_t = default_vault_path())]
-    vault_path: Utf8PathBuf,
+    /// Path to the vault file [default: $XDG_DATA_HOME/rahsia/vault.enc]
+    #[arg(long, global = true)]
+    vault_path: Option<Utf8PathBuf>,
 
     #[command(subcommand)]
     command: Command,
 }
 
-fn default_vault_path() -> Utf8PathBuf {
-    dirs::data_local_dir()
-        .ok_or_eyre("Could not get local data directory")
-        .unwrap()
-        .join("rahsia")
-        .join("vault.enc")
-        .try_into()
-        .context("Local data directory is not a valid UTF-8 path")
-        .unwrap()
+fn resolve_vault_path(explicit: Option<Utf8PathBuf>) -> Result<Utf8PathBuf> {
+    match explicit {
+        Some(p) => Ok(p),
+        None => {
+            let dir =
+                dirs::data_local_dir().ok_or_eyre("Could not determine local data directory")?;
+            dir.join("rahsia")
+                .join("vault.enc")
+                .try_into()
+                .context("Local data directory is not a valid UTF-8 path")
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -67,10 +70,12 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
 
+    let vault_path = resolve_vault_path(cli.vault_path)?;
+
     match cli.command {
-        Command::Init => cmd_init(&cli.vault_path),
+        Command::Init => cmd_init(&vault_path),
         Command::Repl => {
-            let mut vault = open_vault(&cli.vault_path)?;
+            let mut vault = open_vault(&vault_path)?;
             rahsia::repl::run(&mut vault)
         }
         Command::Run {
@@ -78,13 +83,13 @@ fn main() -> Result<()> {
             tags,
             command: cmd,
         } => {
-            let mut vault = open_vault(&cli.vault_path)?;
+            let mut vault = open_vault(&vault_path)?;
             let tags = prompt_tags(tags)?;
             let keys = prompt_keys(keys)?;
             cmd_run(&mut vault, keys, tags, cmd)
         }
         Command::Shared(shared) => {
-            let mut vault = open_vault(&cli.vault_path)?;
+            let mut vault = open_vault(&vault_path)?;
             command::dispatch(&mut vault, shared)
         }
     }

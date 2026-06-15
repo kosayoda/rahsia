@@ -71,6 +71,16 @@ impl Vault {
         Ok(())
     }
 
+    /// Re-encrypt the vault with a new password.
+    pub fn change_password(&mut self, new_password: &[u8]) -> Result<()> {
+        let salt = crypto::generate_salt();
+        let key = crypto::derive_key(new_password, &salt)?;
+        crypto::zeroize_key(&mut self.key);
+        self.salt = salt;
+        self.key = key;
+        self.save()
+    }
+
     /// Set a secret. If the key already exists, its value and tags are updated.
     pub fn set(&mut self, key: String, value: SecretString, tags: Vec<String>) {
         match self.entries.get_mut(&key) {

@@ -44,6 +44,9 @@ enum Command {
     /// Initialize a new encrypted vault
     Init,
 
+    /// Change the vault password
+    UpdatePassword,
+
     /// Start an interactive REPL session
     Repl,
 
@@ -74,6 +77,10 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Init => cmd_init(&vault_path),
+        Command::UpdatePassword => {
+            let mut vault = open_vault(&vault_path)?;
+            cmd_update_password(&mut vault)
+        }
         Command::Repl => {
             let mut vault = open_vault(&vault_path)?;
             rahsia::repl::run(&mut vault)
@@ -123,6 +130,20 @@ fn cmd_init(vault_path: &Utf8Path) -> Result<()> {
     password.zeroize();
     result?;
     eprintln!("Vault created at {vault_path}");
+    Ok(())
+}
+
+fn cmd_update_password(vault: &mut Vault) -> Result<()> {
+    let mut password = Password::new()
+        .with_prompt("New vault password")
+        .with_confirmation("Confirm new password", "Passwords do not match")
+        .interact()?;
+
+    ensure!(!password.is_empty(), "Password cannot be empty");
+
+    vault.change_password(password.as_bytes())?;
+    password.zeroize();
+    eprintln!("Vault password updated");
     Ok(())
 }
 

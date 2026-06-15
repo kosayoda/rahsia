@@ -1,8 +1,10 @@
 use clap::{CommandFactory, Parser, Subcommand};
-use color_eyre::{owo_colors::OwoColorize, Result};
+use color_eyre::{eyre::ensure, owo_colors::OwoColorize, Result};
+use dialoguer::Password;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
 use rustyline::{Context, Editor};
+use zeroize::Zeroize;
 
 use crate::command::{self, SharedCommand};
 use crate::vault::Vault;
@@ -30,6 +32,9 @@ enum ReplCommand {
     /// List all unique tags in the vault
     Tags,
 
+    /// Change the vault password
+    UpdatePassword,
+
     /// Exit the REPL
     #[command(alias = "quit")]
     Exit,
@@ -41,8 +46,21 @@ enum ReplCommand {
 // --- Tab completion ---
 
 const COMMANDS: &[&str] = &[
-    "exit", "get", "help", "list", "load", "ls", "quit", "remove", "rename", "rm", "set", "tag",
-    "tags", "untag",
+    "exit",
+    "get",
+    "help",
+    "list",
+    "load",
+    "ls",
+    "quit",
+    "remove",
+    "rename",
+    "rm",
+    "set",
+    "tag",
+    "tags",
+    "untag",
+    "update-password",
 ];
 
 #[derive(rustyline::Helper, rustyline::Hinter, rustyline::Highlighter, rustyline::Validator)]
@@ -149,6 +167,10 @@ pub fn run(vault: &mut Vault) -> Result<()> {
                                 }
                             }
                         }
+                        ReplCommand::UpdatePassword => match cmd_update_password(vault) {
+                            Ok(()) => {}
+                            Err(e) => eprintln!("{}: {e}", "Error".red()),
+                        },
                         ReplCommand::Exit => break,
                         ReplCommand::Shared(shared) => {
                             if let Err(e) = command::dispatch(vault, shared) {
@@ -179,5 +201,19 @@ pub fn run(vault: &mut Vault) -> Result<()> {
     }
 
     eprintln!("Bye!");
+    Ok(())
+}
+
+fn cmd_update_password(vault: &mut Vault) -> Result<()> {
+    let mut password = Password::new()
+        .with_prompt("New vault password")
+        .with_confirmation("Confirm new password", "Passwords do not match")
+        .interact()?;
+
+    ensure!(!password.is_empty(), "Password cannot be empty");
+
+    vault.change_password(password.as_bytes())?;
+    password.zeroize();
+    eprintln!("Vault password updated");
     Ok(())
 }

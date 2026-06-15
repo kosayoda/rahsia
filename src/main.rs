@@ -64,6 +64,10 @@ enum Command {
         #[arg(long = "tag", short = 't', value_delimiter = ',')]
         tags: Vec<String>,
 
+        /// Show which keys are being injected.
+        #[arg(long = "verbose", short = 'v')]
+        verbose: bool,
+
         /// The command to run.
         #[arg(last = true, required = true)]
         command: Vec<String>,
@@ -93,12 +97,13 @@ fn main() -> Result<()> {
             namespace,
             keys,
             tags,
+            verbose,
             command: cmd,
         } => {
             let mut vault = open_vault(&vault_path)?;
             let tags = prompt_tags(tags)?;
             let keys = prompt_keys(keys)?;
-            cmd_run(&mut vault, namespace, keys, tags, cmd)
+            cmd_run(&mut vault, namespace, keys, tags, verbose, cmd)
         }
         Command::Shared(shared) => {
             let mut vault = open_vault(&vault_path)?;
@@ -157,6 +162,7 @@ fn cmd_run(
     namespace: Option<String>,
     mut keys: Vec<String>,
     tags: Vec<String>,
+    verbose: bool,
     command: Vec<String>,
 ) -> Result<()> {
     ensure!(
@@ -203,6 +209,19 @@ fn cmd_run(
         !secrets.is_empty(),
         "No secrets matched the specified filters"
     );
+
+    if verbose {
+        eprintln!(
+            "Injecting {} secret(s): {}",
+            secrets.len().to_string().green(),
+            secrets
+                .iter()
+                .map(|s| s.key.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+                .dimmed()
+        );
+    }
 
     let mut cmd = std::process::Command::new(&command[0]);
     cmd.args(&command[1..]);

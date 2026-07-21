@@ -145,6 +145,15 @@ pub enum SharedCommand {
         #[arg(long = "to", short = 't')]
         to: Option<String>,
     },
+
+    /// Rename a namespace
+    RenameNamespace {
+        /// The current namespace name.
+        old: Option<String>,
+
+        /// The new namespace name.
+        new: Option<String>,
+    },
 }
 
 /// Dispatch a shared command against an open vault.
@@ -230,6 +239,18 @@ pub fn dispatch(vault: &mut Vault, cmd: SharedCommand) -> Result<()> {
             let key = prompt_key(key)?;
             let to_ns = prompt_namespace(vault, to)?;
             cmd_move(vault, &from_ns, &key, &to_ns)
+        }
+        SharedCommand::RenameNamespace { old, new } => {
+            let old = prompt_namespace(vault, old)?;
+            ensure!(!old.is_empty(), "Cannot rename the default namespace");
+            let new: String = match new {
+                Some(n) => n,
+                None => Input::new()
+                    .with_prompt("New namespace name")
+                    .interact_text()?,
+            };
+            ensure!(!new.is_empty(), "Namespace name cannot be empty");
+            cmd_rename_namespace(vault, &old, &new)
         }
     }
 }
@@ -708,6 +729,19 @@ fn cmd_move(vault: &mut Vault, from_ns: &str, key: &str, to_ns: &str) -> Result<
         key.green(),
         from_label.cyan(),
         to_label.cyan()
+    );
+    Ok(())
+}
+
+fn cmd_rename_namespace(vault: &mut Vault, old: &str, new: &str) -> Result<()> {
+    let count = vault.rename_namespace(old, new)?;
+    ensure!(count > 0, "Namespace '{}' not found", old.red());
+    vault.save()?;
+    eprintln!(
+        "Renamed namespace {} to {} ({} secret(s))",
+        old.cyan(),
+        new.cyan(),
+        count.to_string().green()
     );
     Ok(())
 }

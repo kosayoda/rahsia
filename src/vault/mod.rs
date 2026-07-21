@@ -150,6 +150,19 @@ impl Vault {
         Ok(())
     }
 
+    /// Rename a namespace, moving all its secrets.
+    pub fn rename_namespace(&mut self, old_ns: &str, new_ns: &str) -> Result<usize> {
+        let now = jiff::Timestamp::now().to_string();
+        let count = self
+            .conn
+            .execute(
+                "UPDATE secrets SET namespace = ?1, updated_at = ?2 WHERE namespace = ?3",
+                rusqlite::params![new_ns, now, old_ns],
+            )
+            .map_err(|e| Error::Database(e.to_string()))?;
+        Ok(count)
+    }
+
     /// Move a secret to a different namespace.
     pub fn move_secret(&mut self, from_ns: &str, key: &str, to_ns: &str) -> Result<()> {
         self.get(from_ns, key)?;

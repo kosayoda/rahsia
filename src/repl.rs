@@ -63,6 +63,7 @@ const COMMANDS: &[&str] = &[
     "quit",
     "remove",
     "rename",
+    "rename-namespace",
     "rm",
     "set",
     "tag",
